@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0
 
-LINUXINCLUDE += -I$(ROOTDIR)/include
+LINUXINCLUDE += -I$(ROOTDIR)/include  --include dccp-module-config.h
 
 obj-$(CONFIG_IP_DCCP) += dccp.o dccp_ipv4.o
 
