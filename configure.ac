@@ -15,9 +15,18 @@ if test "x$with_modules" != "xno"; then
       test -f /usr/include/linux/dccp.h || AC_MSG_ERROR([no kernel-headers found])
    else
       AC_SUBST([MODULES], [modules])
-      AC_SUBST([KERNEL_BUILD], [$kernel/build])
       AC_SUBST([KERNEL_EXTRA], [$kernel/extra])
-      test -f "$kernel/build/Makefile" || AC_MSG_ERROR([no kernel-devel found])
+
+      if test -e "$kernel/build/Makefile" ; then
+         # Ubuntu/Debian:
+         AC_SUBST([KERNEL_BUILD], [$kernel/build])
+      elif test -e "/usr/src/kernels/`uname -r`/Makefile" ; then
+         # Fedora:
+         AC_SUBST([KERNEL_BUILD], [/usr/src/kernels/$kernel])
+      else
+         AC_MSG_ERROR([Unable to find the sources of the currently running kernel!])
+      fi
+
       AC_CONFIG_FILES([modules/Makefile])
    fi
 else
