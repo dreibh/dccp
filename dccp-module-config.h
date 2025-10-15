@@ -1,0 +1,7 @@
+#define CONFIG_IP_DCCP             1
+#define CONFIG_INET_DCCP_DIAG      1
+// #define CONFIG_IP_DCCP_CCID2_DEBUG 1
+#define CONFIG_IP_DCCP_CCID3       1
+// #define CONFIG_IP_DCCP_CCID3_DEBUG 1
+#define CONFIG_IP_DCCP_TFRC_LIB    1
+// #define CONFIG_IP_DCCP_TFRC_DEBUG  1
