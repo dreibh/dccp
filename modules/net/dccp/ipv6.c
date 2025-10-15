@@ -41,6 +41,30 @@ struct dccp_v6_pernet {
 
 static unsigned int dccp_v6_pernet_id __read_mostly;
 
+static siphash_aligned_key_t net_secret;
+static u64 secure_dccpv6_sequence_number(__be32 *saddr, __be32 *daddr,
+				  	 __be16 sport, __be16 dport)
+{
+	const struct {
+		struct in6_addr saddr;
+		struct in6_addr daddr;
+		__be16 sport;
+		__be16 dport;
+	} __aligned(SIPHASH_ALIGNMENT) combined = {
+		.saddr = *(struct in6_addr *)saddr,
+		.daddr = *(struct in6_addr *)daddr,
+		.sport = sport,
+		.dport = dport
+	};
+	u64 seq;
+	net_get_random_once(&net_secret, sizeof(net_secret));
+	seq = siphash(&combined, offsetofend(typeof(combined), dport),
+		      &net_secret);
+	seq += ktime_get_real_ns();
+	seq &= (1ull << 48) - 1;
+	return seq;
+}
+
 /* The per-net v6_ctl_sk is used for sending RSTs and ACKs */
 
 static const struct inet_connection_sock_af_ops dccp_ipv6_mapped;

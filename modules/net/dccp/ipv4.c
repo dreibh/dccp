@@ -38,6 +38,20 @@ struct dccp_v4_pernet {
 
 static unsigned int dccp_v4_pernet_id __read_mostly;
 
+static siphash_aligned_key_t net_secret;
+static u64 secure_dccp_sequence_number(__be32 saddr, __be32 daddr,
+				       __be16 sport, __be16 dport)
+{
+	u64 seq;
+	net_get_random_once(&net_secret, sizeof(net_secret));
+	seq = siphash_3u32((__force u32)saddr, (__force u32)daddr,
+			   (__force u32)sport << 16 | (__force u32)dport,
+			   &net_secret);
+	seq += ktime_get_real_ns();
+	seq &= (1ull << 48) - 1;
+	return seq;
+}
+
 /*
  * The per-net v4_ctl_sk socket is used for responding to
  * the Out-of-the-blue (OOTB) packets. A control sock will be created
