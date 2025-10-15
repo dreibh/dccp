@@ -1,11 +1,11 @@
 EXTRA_DIST	= include net
-MODULES		= dccp dccp_diag
+MODULES		= dccp_ipv4 dccp_ipv6 dccp dccp_diag
 
 all:
 	$(MAKE) V=1 -C $(KERNEL_BUILD) M=$(CURDIR)/net/dccp modules \
 		ROOTDIR=$(CURDIR) \
 		CONFIG_IP_DCCP=m \
-		CONFIG_INET_DCCP_DIAG=n \
+		CONFIG_INET_DCCP_DIAG=m \
 		CONFIG_IP_DCCP_CCID2_DEBUG=n \
 		CONFIG_IP_DCCP_CCID3=m \
 		CONFIG_IP_DCCP_CCID3_DEBUG=n \
