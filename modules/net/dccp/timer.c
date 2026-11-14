@@ -123,15 +123,14 @@ static void dccp_retransmit_timer(struct sock *sk)
 
 static void dccp_write_timer(struct timer_list *t)
 {
-	struct inet_connection_sock *icsk =
-			timer_container_of(icsk, t, icsk_retransmit_timer);
-	struct sock *sk = &icsk->icsk_inet.sk;
+	struct sock *sk = timer_container_of(sk, t, tcp_retransmit_timer);
+	struct inet_connection_sock *icsk = inet_csk(sk);
 	int event = 0;
 
 	bh_lock_sock(sk);
 	if (sock_owned_by_user(sk)) {
 		/* Try again later */
-		sk_reset_timer(sk, &icsk->icsk_retransmit_timer,
+		sk_reset_timer(sk, &sk->tcp_retransmit_timer,
 			       jiffies + (HZ / 20));
 		goto out;
 	}
@@ -139,9 +138,9 @@ static void dccp_write_timer(struct timer_list *t)
 	if (sk->sk_state == DCCP_CLOSED || !icsk->icsk_pending)
 		goto out;
 
-	if (time_after(icsk_timeout(icsk), jiffies)) {
-		sk_reset_timer(sk, &icsk->icsk_retransmit_timer,
-			       icsk_timeout(icsk));
+	if (time_after(tcp_timeout_expires(sk), jiffies)) {
+		sk_reset_timer(sk, &sk->tcp_retransmit_timer,
+			       tcp_timeout_expires(sk));
 		goto out;
 	}
 
@@ -246,7 +245,7 @@ void dccp_init_xmit_timers(struct sock *sk)
 
 	tasklet_setup(&dp->dccps_xmitlet, dccp_write_xmitlet);
 	timer_setup(&dp->dccps_xmit_timer, dccp_write_xmit_timer, 0);
-	inet_csk_init_xmit_timers(sk, &dccp_write_timer, &dccp_delack_timer,
+	dccp_csk_init_xmit_timers(sk, &dccp_write_timer, &dccp_delack_timer,
 				  &dccp_keepalive_timer);
 }
 

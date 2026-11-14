@@ -52,13 +52,126 @@ static u64 secure_dccp_sequence_number(__be32 saddr, __be32 daddr,
 	return seq;
 }
 
+static struct sock *dccp_v4_lookup_established(const struct net *net,
+					       const __be32 saddr,
+					       const __be16 sport,
+					       const __be32 daddr,
+					       const u16 hnum,
+					       const int dif, const int sdif)
+{
+	INET_ADDR_COOKIE(acookie, saddr, daddr);
+	const __portpair ports = INET_COMBINED_PORTS(sport, hnum);
+	unsigned int hash = inet_ehashfn(net, daddr, hnum, saddr, sport);
+	unsigned int slot = hash & dccp_hashinfo.ehash_mask;
+	struct inet_ehash_bucket *head = &dccp_hashinfo.ehash[slot];
+	const struct hlist_nulls_node *node;
+	struct sock *sk;
+
+	rcu_read_lock();
+begin:
+	sk_nulls_for_each_rcu(sk, node, &head->chain) {
+		if (sk->sk_hash != hash)
+			continue;
+		if (likely(inet_match(net, sk, acookie, ports, dif, sdif))) {
+			if (unlikely(!refcount_inc_not_zero(&sk->sk_refcnt)))
+				goto out;
+			if (unlikely(!inet_match(net, sk, acookie, ports,
+						 dif, sdif))) {
+				sock_gen_put(sk);
+				goto begin;
+			}
+			goto found;
+		}
+	}
+	if (get_nulls_value(node) != slot)
+		goto begin;
+out:
+	sk = NULL;
+found:
+	rcu_read_unlock();
+	return sk;
+}
+
+static struct sock *dccp_v4_lhash2_lookup(const struct net *net,
+					  struct inet_listen_hashbucket *ilb2,
+					  const __be32 daddr,
+					  const unsigned short hnum,
+					  const int dif, const int sdif)
+{
+	struct sock *sk, *result = NULL;
+	struct hlist_nulls_node *node;
+	int score, hiscore = 0;
+
+	sk_nulls_for_each_rcu(sk, node, &ilb2->nulls_head) {
+		const struct inet_sock *inet = inet_sk(sk);
+
+		if (!net_eq(sock_net(sk), net) || inet->inet_num != hnum)
+			continue;
+		if (sk->sk_family != PF_INET && ipv6_only_sock(sk))
+			continue;
+		if (inet->inet_rcv_saddr && inet->inet_rcv_saddr != daddr)
+			continue;
+		if (!inet_sk_bound_dev_eq(net, READ_ONCE(sk->sk_bound_dev_if),
+					  dif, sdif))
+			continue;
+
+		score = (sk->sk_family == PF_INET) ? 2 : 1;
+		if (inet->inet_rcv_saddr)
+			score += 4;
+		if (sk->sk_bound_dev_if)
+			score += 2;
+		if (score > hiscore) {
+			result = sk;
+			hiscore = score;
+		}
+	}
+	return result;
+}
+
+static struct sock *dccp_v4_lookup_skb(struct sk_buff *skb,
+				       const __be16 sport,
+				       const __be16 dport,
+				       bool *refcounted)
+{
+	struct net *net = dev_net(skb->dev);
+	const struct iphdr *iph = ip_hdr(skb);
+	const u16 hnum = ntohs(dport);
+	const int dif = inet_iif(skb);
+	const int sdif = inet_sdif(skb);
+	struct inet_listen_hashbucket *ilb2;
+	struct sock *sk;
+	u32 hash;
+
+	sk = dccp_v4_lookup_established(net, iph->saddr, sport,
+					iph->daddr, hnum, dif, sdif);
+	if (sk) {
+		*refcounted = true;
+		return sk;
+	}
+
+	*refcounted = false;
+	hash = ipv4_portaddr_hash(net, iph->daddr, hnum);
+	ilb2 = inet_lhash2_bucket(&dccp_hashinfo, hash);
+	sk = dccp_v4_lhash2_lookup(net, ilb2, iph->daddr, hnum, dif, sdif);
+	if (sk)
+		return sk;
+
+	if (iph->daddr != htonl(INADDR_ANY)) {
+		hash = ipv4_portaddr_hash(net, htonl(INADDR_ANY), hnum);
+		ilb2 = inet_lhash2_bucket(&dccp_hashinfo, hash);
+		sk = dccp_v4_lhash2_lookup(net, ilb2, iph->daddr, hnum,
+					   dif, sdif);
+	}
+	return sk;
+}
+
 /*
  * The per-net v4_ctl_sk socket is used for responding to
  * the Out-of-the-blue (OOTB) packets. A control sock will be created
  * for this socket at the initialization time.
  */
 
-int dccp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
+int dccp_v4_connect(struct sock *sk, struct sockaddr_unsized *uaddr, int addr_len)
 {
 	const struct sockaddr_in *usin = (struct sockaddr_in *)uaddr;
 	struct inet_sock *inet = inet_sk(sk);
@@ -106,7 +219,7 @@ int dccp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 		daddr = fl4->daddr;
 
 	if (inet->inet_saddr == 0) {
-		err = inet_bhash2_update_saddr(sk,  &fl4->saddr, AF_INET);
+		err = dccp_bhash2_update_saddr(sk, &fl4->saddr, AF_INET);
 		if (err) {
 			ip_rt_put(rt);
 			return err;
@@ -128,7 +241,7 @@ int dccp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 	 * complete initialization after this.
 	 */
 	dccp_set_state(sk, DCCP_REQUESTING);
-	err = inet_hash_connect(&dccp_death_row, sk);
+	err = dccp_hash_connect(&dccp_death_row, sk);
 	if (err != 0)
 		goto failure;
 
@@ -159,7 +272,7 @@ failure:
 	 * This unhashes the socket and releases the local port, if necessary.
 	 */
 	dccp_set_state(sk, DCCP_CLOSED);
-	inet_bhash2_reset_saddr(sk);
+	dccp_bhash2_reset_saddr(sk);
 	ip_rt_put(rt);
 	sk->sk_route_caps = 0;
 	inet->inet_dport = 0;
@@ -185,7 +298,7 @@ static inline void dccp_do_pmtu_discovery(struct sock *sk,
 	if (sk->sk_state == DCCP_LISTEN)
 		return;
 
-	dst = inet_csk_update_pmtu(sk, mtu);
+	dst = dccp_csk_update_pmtu(sk, mtu);
 	if (!dst)
 		return;
 
@@ -239,7 +352,7 @@ void dccp_req_err(struct sock *sk, u64 seq)
 		 * created socket, and POSIX does not want network
 		 * errors returned from accept().
 		 */
-		inet_csk_reqsk_queue_drop(req->rsk_listener, req);
+		dccp_csk_reqsk_queue_drop(req->rsk_listener, req);
 	}
 	reqsk_put(req);
 }
@@ -278,17 +391,17 @@ static int dccp_v4_err(struct sk_buff *skb, u32 info)
 	iph = (struct iphdr *)skb->data;
 	dh = (struct dccp_hdr *)(skb->data + offset);
 
-	sk = __inet_lookup_established(net, &dccp_hashinfo,
-				       iph->daddr, dh->dccph_dport,
-				       iph->saddr, ntohs(dh->dccph_sport),
-				       inet_iif(skb), 0);
+	sk = dccp_v4_lookup_established(net,
+					iph->daddr, dh->dccph_dport,
+					iph->saddr, ntohs(dh->dccph_sport),
+					inet_iif(skb), 0);
 	if (!sk) {
 		__ICMP_INC_STATS(net, ICMP_MIB_INERRORS);
 		return -ENOENT;
 	}
 
 	if (sk->sk_state == DCCP_TIME_WAIT) {
-		inet_twsk_put(inet_twsk(sk));
+		dccp_twsk_put(inet_twsk(sk));
 		return 0;
 	}
 	seq = dccp_hdr_seq(dh);
@@ -425,7 +538,9 @@ struct sock *dccp_v4_request_recv_sock(const struct sock *sk,
 				       struct request_sock *req,
 				       struct dst_entry *dst,
 				       struct request_sock *req_unhash,
-				       bool *own_req)
+				       bool *own_req,
+				       void (*opt_child_init)(struct sock *newsk,
+							      const struct sock *sk))
 {
 	struct inet_request_sock *ireq;
 	struct inet_sock *newinet;
@@ -445,6 +560,13 @@ struct sock *dccp_v4_request_recv_sock(const struct sock *sk,
 	newinet->mc_ttl	   = ip_hdr(skb)->ttl;
 	atomic_set(&newinet->inet_id, get_random_u16());
 
+	if (opt_child_init)
+		opt_child_init(newsk, sk);
+#if IS_ENABLED(CONFIG_IPV6)
+	else
+		newinet->pinet6 = NULL;
+#endif
+
 	if (dst == NULL && (dst = inet_csk_route_child_sock(sk, newsk, req)) == NULL)
 		goto put_and_exit;
 
@@ -454,7 +576,7 @@ struct sock *dccp_v4_request_recv_sock(const struct sock *sk,
 
 	if (__inet_inherit_port(sk, newsk) < 0)
 		goto put_and_exit;
-	*own_req = inet_ehash_nolisten(newsk, req_to_sk(req_unhash), NULL);
+	*own_req = dccp_ehash_nolisten(newsk, req_to_sk(req_unhash), NULL);
 	if (*own_req)
 		ireq->ireq_opt = NULL;
 	else
@@ -485,7 +607,7 @@ static struct dst_entry* dccp_v4_route_skb(struct net *net, struct sock *sk,
 		.flowi4_oif = inet_iif(skb),
 		.daddr = iph->saddr,
 		.saddr = iph->daddr,
-		.flowi4_tos = inet_dscp_to_dsfield(inet_sk_dscp(inet_sk(sk))),
+		.flowi4_dscp = inet_sk_dscp(inet_sk(sk)),
 		.flowi4_scope = ip_sock_rt_scope(sk),
 		.flowi4_proto = sk->sk_protocol,
 		.fl4_sport = dccp_hdr(skb)->dccph_dport,
@@ -509,7 +631,7 @@ static int dccp_v4_send_response(const struct sock *sk, struct request_sock *req
 	struct dst_entry *dst;
 	struct flowi4 fl4;
 
-	dst = inet_csk_route_req(sk, &fl4, req);
+	dst = dccp_csk_route_req(sk, &fl4, req);
 	if (dst == NULL)
 		goto out;
 
@@ -594,14 +716,15 @@ void dccp_syn_ack_timeout(const struct request_sock *req)
 }
 EXPORT_SYMBOL(dccp_syn_ack_timeout);
 
-static struct request_sock_ops dccp_request_sock_ops __read_mostly = {
-	.family		= PF_INET,
-	.obj_size	= sizeof(struct dccp_request_sock),
-	.rtx_syn_ack	= dccp_v4_send_response,
-	.send_ack	= dccp_reqsk_send_ack,
-	.destructor	= dccp_v4_reqsk_destructor,
-	.send_reset	= dccp_v4_ctl_send_reset,
-	.syn_ack_timeout = dccp_syn_ack_timeout,
+static struct dccp_request_sock_ops dccp_request_sock_ops __read_mostly = {
+	.ops = {
+		.family		= PF_INET,
+		.obj_size	= sizeof(struct dccp_request_sock),
+		.send_ack	= dccp_reqsk_send_ack,
+		.destructor	= dccp_v4_reqsk_destructor,
+		.send_reset	= dccp_v4_ctl_send_reset,
+	},
+	.rtx_response		= dccp_v4_send_response,
 };
 
 int dccp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
@@ -632,7 +755,7 @@ int dccp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (sk_acceptq_is_full(sk))
 		goto drop;
 
-	req = inet_reqsk_alloc(&dccp_request_sock_ops, sk, true);
+	req = inet_reqsk_alloc(&dccp_request_sock_ops.ops, sk, true);
 	if (req == NULL)
 		goto drop;
 
@@ -669,7 +792,7 @@ int dccp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (dccp_v4_send_response(sk, req))
 		goto drop_and_free;
 
-	if (unlikely(!inet_csk_reqsk_queue_hash_add(sk, req, DCCP_TIMEOUT_INIT)))
+	if (unlikely(!dccp_reqsk_queue_hash_add(sk, req, DCCP_TIMEOUT_INIT)))
 		reqsk_free(req);
 	else
 		reqsk_put(req);
@@ -847,8 +970,8 @@ static int dccp_v4_rcv(struct sk_buff *skb)
 	}
 
 lookup:
-	sk = __inet_lookup_skb(&dccp_hashinfo, skb, __dccp_hdr_len(dh),
-			       dh->dccph_sport, dh->dccph_dport, 0, &refcounted);
+	sk = dccp_v4_lookup_skb(skb, dh->dccph_sport, dh->dccph_dport,
+				&refcounted);
 	if (!sk) {
 		dccp_pr_debug("failed to look up flow ID in table and "
 			      "get corresponding socket\n");
@@ -863,7 +986,7 @@ lookup:
 	 */
 	if (sk->sk_state == DCCP_TIME_WAIT) {
 		dccp_pr_debug("sk->sk_state == DCCP_TIME_WAIT: do_time_wait\n");
-		inet_twsk_put(inet_twsk(sk));
+		dccp_twsk_put(inet_twsk(sk));
 		goto no_dccp_socket;
 	}
 
@@ -873,7 +996,7 @@ lookup:
 
 		sk = req->rsk_listener;
 		if (unlikely(sk->sk_state != DCCP_LISTEN)) {
-			inet_csk_reqsk_queue_drop_and_put(sk, req);
+			dccp_csk_reqsk_queue_drop_and_put(sk, req);
 			goto lookup;
 		}
 		sock_hold(sk);
@@ -979,19 +1102,18 @@ static struct proto dccp_v4_prot = {
 	.setsockopt		= dccp_setsockopt,
 	.getsockopt		= dccp_getsockopt,
 	.sendmsg		= dccp_sendmsg,
-	.recvmsg		= dccp_recvmsg,
+	.recvmsg		= DCCP_RECVMSG_OP,
 	.backlog_rcv		= dccp_v4_do_rcv,
-	.hash			= inet_hash,
-	.unhash			= inet_unhash,
+	.hash			= dccp_inet_hash,
+	.unhash			= dccp_inet_unhash,
 	.accept			= inet_csk_accept,
 	.get_port		= inet_csk_get_port,
 	.shutdown		= dccp_shutdown,
 	.destroy		= dccp_destroy_sock,
-	.orphan_count		= &dccp_orphan_count,
 	.max_header		= MAX_DCCP_HEADER,
 	.obj_size		= sizeof(struct dccp_sock),
 	.slab_flags		= SLAB_TYPESAFE_BY_RCU,
-	.rsk_prot		= &dccp_request_sock_ops,
+	.rsk_prot		= &dccp_request_sock_ops.ops,
 	.twsk_prot		= &dccp_timewait_sock_ops,
 	.h.hashinfo		= &dccp_hashinfo,
 };
@@ -1054,7 +1176,7 @@ static void __net_exit dccp_v4_exit_net(struct net *net)
 
 static void __net_exit dccp_v4_exit_batch(struct list_head *net_exit_list)
 {
-	inet_twsk_purge(&dccp_hashinfo);
+	dccp_twsk_purge(&dccp_hashinfo);
 }
 
 static struct pernet_operations dccp_v4_ops = {

@@ -15,6 +15,8 @@
 #include <net/sock.h>
 #include <net/tcp.h>
 #include "ackvec.h"
+#include "dccp_compat.h"
+#include "dccp_inet.h"
 
 /*
  * 	DCCP - specific warning and debugging macros.
@@ -242,7 +244,7 @@ void dccp_flush_write_queue(struct sock *sk, long *time_budget);
 void dccp_init_xmit_timers(struct sock *sk);
 static inline void dccp_clear_xmit_timers(struct sock *sk)
 {
-	inet_csk_clear_xmit_timers(sk);
+	dccp_csk_clear_xmit_timers(sk);
 }
 
 unsigned int dccp_sync_mss(struct sock *sk, u32 pmtu);
@@ -252,8 +254,15 @@ const char *dccp_packet_name(const int type);
 void dccp_set_state(struct sock *sk, const int state);
 void dccp_done(struct sock *sk);
 
+struct dccp_request_sock_ops {
+	struct request_sock_ops ops;
+	int (*rtx_response)(const struct sock *sk, struct request_sock *req);
+};
+
 int dccp_reqsk_init(struct request_sock *rq, struct dccp_sock const *dp,
 		    struct sk_buff const *skb);
+bool dccp_reqsk_queue_hash_add(struct sock *sk, struct request_sock *req,
+			       unsigned long timeout);
 
 int dccp_v4_conn_request(struct sock *sk, struct sk_buff *skb);
 
@@ -267,7 +276,9 @@ struct sock *dccp_v4_request_recv_sock(const struct sock *sk, struct sk_buff *sk
 				       struct request_sock *req,
 				       struct dst_entry *dst,
 				       struct request_sock *req_unhash,
-				       bool *own_req);
+				       bool *own_req,
+				       void (*opt_child_init)(struct sock *newsk,
+							      const struct sock *sk));
 struct sock *dccp_check_req(struct sock *sk, struct sk_buff *skb,
 			    struct request_sock *req);
 
@@ -294,13 +305,12 @@ int dccp_setsockopt(struct sock *sk, int level, int optname,
 		    sockptr_t optval, unsigned int optlen);
 int dccp_ioctl(struct sock *sk, int cmd, int *karg);
 int dccp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size);
-int dccp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags,
-		 int *addr_len);
+int dccp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags);
 void dccp_shutdown(struct sock *sk, int how);
 int inet_dccp_listen(struct socket *sock, int backlog);
 __poll_t dccp_poll(struct file *file, struct socket *sock,
 		       poll_table *wait);
-int dccp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len);
+int dccp_v4_connect(struct sock *sk, struct sockaddr_unsized *uaddr, int addr_len);
 void dccp_req_err(struct sock *sk, u64 seq);
 
 struct sk_buff *dccp_ctl_make_reset(struct sock *sk, struct sk_buff *skb);

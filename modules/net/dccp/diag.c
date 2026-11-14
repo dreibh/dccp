@@ -6,9 +6,12 @@
  *  Arnaldo Carvalho de Melo <acme@mandriva.com>
  */
 
-
 #include <linux/module.h>
 #include <linux/inet_diag.h>
+#include <net/inet_hashtables.h>
+#include <net/inet6_hashtables.h>
+#include <net/netlink.h>
+#include <net/sock.h>
 
 #include "ccid.h"
 #include "dccp.h"
@@ -48,13 +51,238 @@ static void dccp_diag_get_info(struct sock *sk, struct inet_diag_msg *r,
 static void dccp_diag_dump(struct sk_buff *skb, struct netlink_callback *cb,
 			   const struct inet_diag_req_v2 *r)
 {
-	inet_diag_dump_icsk(&dccp_hashinfo, skb, cb, r);
+	const struct inet_diag_dump_data *cb_data = cb->data;
+	bool net_admin = netlink_capable(cb->skb, CAP_NET_ADMIN);
+	struct net *net = sock_net(skb->sk);
+	int num = 0, s_num, i;
+
+	if (cb->args[2] == 0) {
+		if (!(r->idiag_states & TCPF_LISTEN) || !dccp_hashinfo.lhash2)
+			goto skip_listen;
+
+		s_num = cb->args[1];
+		for (i = cb->args[0]; i <= dccp_hashinfo.lhash2_mask; i++) {
+			struct inet_listen_hashbucket *ilb2 =
+				&dccp_hashinfo.lhash2[i];
+			struct hlist_nulls_node *node;
+			struct sock *sk;
+
+			num = 0;
+			spin_lock_bh(&ilb2->lock);
+			sk_nulls_for_each(sk, node, &ilb2->nulls_head) {
+				if (!net_eq(sock_net(sk), net))
+					continue;
+				if (r->sdiag_family != AF_UNSPEC &&
+				    sk->sk_family != r->sdiag_family)
+					continue;
+				if (r->id.idiag_sport &&
+				    htons(sk->sk_num) != r->id.idiag_sport)
+					continue;
+				if (r->id.idiag_dport)
+					continue;
+				if (num < s_num) {
+					num++;
+					continue;
+				}
+				if (!inet_diag_bc_sk(cb_data, sk)) {
+					num++;
+					continue;
+				}
+				if (inet_sk_diag_fill(sk, inet_csk(sk), skb, cb,
+						      r, NLM_F_MULTI,
+						      net_admin) < 0) {
+					spin_unlock_bh(&ilb2->lock);
+					goto done;
+				}
+				num++;
+			}
+			spin_unlock_bh(&ilb2->lock);
+			s_num = 0;
+		}
+skip_listen:
+		cb->args[2] = 1;
+		cb->args[0] = 0;
+		cb->args[1] = 0;
+	}
+
+	if (!(r->idiag_states & ~TCPF_LISTEN) || !dccp_hashinfo.ehash) {
+		i = dccp_hashinfo.ehash_mask + 1;
+		num = 0;
+		goto done;
+	}
+
+	s_num = cb->args[1];
+	for (i = cb->args[0]; i <= dccp_hashinfo.ehash_mask; i++) {
+		struct inet_ehash_bucket *head = &dccp_hashinfo.ehash[i];
+		spinlock_t *lock = inet_ehash_lockp(&dccp_hashinfo, i);
+		struct hlist_nulls_node *node;
+		struct sock *sk;
+
+		num = 0;
+		spin_lock_bh(lock);
+		sk_nulls_for_each(sk, node, &head->chain) {
+			if (!net_eq(sock_net(sk), net))
+				continue;
+			if (r->sdiag_family != AF_UNSPEC &&
+			    sk->sk_family != r->sdiag_family)
+				continue;
+			if (!(r->idiag_states & (1 << sk->sk_state)))
+				continue;
+			if (r->id.idiag_sport &&
+			    htons(sk->sk_num) != r->id.idiag_sport)
+				continue;
+			if (r->id.idiag_dport &&
+			    sk->sk_dport != r->id.idiag_dport)
+				continue;
+			if (num < s_num) {
+				num++;
+				continue;
+			}
+			if (!inet_diag_bc_sk(cb_data, sk)) {
+				num++;
+				continue;
+			}
+			if (inet_sk_diag_fill(sk,
+					      sk_fullsock(sk) ? inet_csk(sk) : NULL,
+					      skb, cb, r, NLM_F_MULTI,
+					      net_admin) < 0) {
+				spin_unlock_bh(lock);
+				goto done;
+			}
+			num++;
+		}
+		spin_unlock_bh(lock);
+		s_num = 0;
+	}
+
+done:
+	cb->args[0] = i;
+	cb->args[1] = num;
+}
+
+static struct sock *dccp_diag_find_one(struct net *net,
+				       const struct inet_diag_req_v2 *req)
+{
+	const u16 hnum = ntohs(req->id.idiag_sport);
+	const __be16 dport = req->id.idiag_dport;
+	const int dif = req->id.idiag_if;
+	const __portpair ports = INET_COMBINED_PORTS(dport, hnum);
+	const struct hlist_nulls_node *node;
+	struct sock *sk = NULL;
+
+	rcu_read_lock();
+	if (dport && dccp_hashinfo.ehash) {
+		if (req->sdiag_family == AF_INET) {
+			const __be32 laddr = req->id.idiag_src[0];
+			const __be32 raddr = req->id.idiag_dst[0];
+			INET_ADDR_COOKIE(acookie, raddr, laddr);
+			unsigned int hash = inet_ehashfn(net, laddr, hnum,
+							 raddr, dport);
+			unsigned int slot = hash & dccp_hashinfo.ehash_mask;
+			struct inet_ehash_bucket *head =
+				&dccp_hashinfo.ehash[slot];
+
+			sk_nulls_for_each_rcu(sk, node, &head->chain) {
+				if (sk->sk_hash != hash)
+					continue;
+				if (inet_match(net, sk, acookie, ports,
+					       dif, 0)) {
+					if (refcount_inc_not_zero(&sk->sk_refcnt))
+						goto out;
+					break;
+				}
+			}
+		}
+#if IS_ENABLED(CONFIG_IPV6)
+		else if (req->sdiag_family == AF_INET6) {
+			const struct in6_addr *laddr =
+				(const struct in6_addr *)req->id.idiag_src;
+			const struct in6_addr *raddr =
+				(const struct in6_addr *)req->id.idiag_dst;
+			unsigned int hash = inet6_ehashfn(net, laddr, hnum,
+							  raddr, dport);
+			unsigned int slot = hash & dccp_hashinfo.ehash_mask;
+			struct inet_ehash_bucket *head =
+				&dccp_hashinfo.ehash[slot];
+
+			sk_nulls_for_each_rcu(sk, node, &head->chain) {
+				if (sk->sk_hash != hash)
+					continue;
+				if (inet6_match(net, sk, raddr, laddr, ports,
+						dif, 0)) {
+					if (refcount_inc_not_zero(&sk->sk_refcnt))
+						goto out;
+					break;
+				}
+			}
+		}
+#endif
+	}
+
+	if ((req->idiag_states & TCPF_LISTEN) && dccp_hashinfo.lhash2) {
+		unsigned int i;
+
+		for (i = 0; i <= dccp_hashinfo.lhash2_mask; i++) {
+			struct inet_listen_hashbucket *ilb2 =
+				&dccp_hashinfo.lhash2[i];
+
+			sk_nulls_for_each_rcu(sk, node, &ilb2->nulls_head) {
+				if (!net_eq(sock_net(sk), net) ||
+				    sk->sk_family != req->sdiag_family ||
+				    sk->sk_num != hnum)
+					continue;
+				if (dif && sk->sk_bound_dev_if != dif)
+					continue;
+				if (req->sdiag_family == AF_INET &&
+				    inet_sk(sk)->inet_rcv_saddr !=
+				    req->id.idiag_src[0])
+					continue;
+#if IS_ENABLED(CONFIG_IPV6)
+				if (req->sdiag_family == AF_INET6 &&
+				    !ipv6_addr_equal(&sk->sk_v6_rcv_saddr,
+						     (const struct in6_addr *)
+						     req->id.idiag_src))
+					continue;
+#endif
+				if (refcount_inc_not_zero(&sk->sk_refcnt))
+					goto out;
+			}
+		}
+	}
+	sk = NULL;
+out:
+	rcu_read_unlock();
+	return sk;
 }
 
 static int dccp_diag_dump_one(struct netlink_callback *cb,
 			      const struct inet_diag_req_v2 *req)
 {
-	return inet_diag_dump_one_icsk(&dccp_hashinfo, cb, req);
+	struct net *net = sock_net(cb->skb->sk);
+	struct sk_buff *rep;
+	struct sock *sk;
+	int err;
+
+	sk = dccp_diag_find_one(net, req);
+	if (!sk)
+		return -ENOENT;
+
+	rep = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
+	if (!rep) {
+		sock_gen_put(sk);
+		return -ENOMEM;
+	}
+
+	err = inet_sk_diag_fill(sk, sk_fullsock(sk) ? inet_csk(sk) : NULL,
+				rep, cb, req, 0,
+				netlink_capable(cb->skb, CAP_NET_ADMIN));
+	sock_gen_put(sk);
+	if (err < 0) {
+		kfree_skb(rep);
+		return err;
+	}
+
+	return nlmsg_unicast(cb->skb->sk, rep, NETLINK_CB(cb->skb).portid);
 }
 
 static const struct inet_diag_handler dccp_diag_handler = {

@@ -1,7 +1,7 @@
-Linux DCCP Kernel Module for Kernel 6.16+
-=========================================
+Linux DCCP Kernel Module for Kernel >=7.0.0
+===========================================
 
-This repository contains Linux DCCP from the Linux Kernel 6.15. Since DCCP was removed in Linux Kernel 6.16, the DCCP module needs to be compiled externally. It is particularly intended to be used by [Network Performance Meter&nbsp;(NetPerfMeter)](https://www.nntb.no/~dreibh/netperfmeter/), the network performance meter tool for the TCP, MPTCP, SCTP, UDP, and DCCP transport protocols over IPv4 and IPv6.
+This repository contains Linux DCCP from the Linux Kernel 6.15 ported to newer kernels. Since DCCP was removed in Linux Kernel 6.16, the DCCP module needs to be compiled externally. It is particularly intended to be used by [Network Performance Meter&nbsp;(NetPerfMeter)](https://www.nntb.no/~dreibh/netperfmeter/), the network performance meter tool for the TCP, MPTCP, SCTP, UDP, QUIC, and DCCP transport protocols over IPv4 and IPv6.
 
 # Building the Module
 

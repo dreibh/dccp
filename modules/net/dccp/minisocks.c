@@ -12,6 +12,7 @@
 #include <linux/skbuff.h>
 #include <linux/timer.h>
 
+#include <net/inet_hashtables.h>
 #include <net/sock.h>
 #include <net/xfrm.h>
 #include <net/inet_timewait_sock.h>
@@ -34,7 +35,7 @@ void dccp_time_wait(struct sock *sk, int state, int timeo)
 {
 	struct inet_timewait_sock *tw;
 
-	tw = inet_twsk_alloc(sk, &dccp_death_row, state);
+	tw = dccp_twsk_alloc(sk, &dccp_death_row, state);
 
 	if (tw != NULL) {
 		const struct inet_connection_sock *icsk = inet_csk(sk);
@@ -57,7 +58,7 @@ void dccp_time_wait(struct sock *sk, int state, int timeo)
 		/* Linkage updates.
 		 * Note that access to tw after this point is illegal.
 		 */
-		inet_twsk_hashdance_schedule(tw, sk, &dccp_hashinfo, timeo);
+		dccp_twsk_hashdance_schedule(tw, sk, &dccp_hashinfo, timeo);
 	} else {
 		/* Sorry, if we're out of memory, just CLOSE this
 		 * socket up.  We've got bigger problems than
@@ -79,7 +80,7 @@ struct sock *dccp_create_openreq_child(const struct sock *sk,
 	 *   (* Generate a new socket and switch to that socket *)
 	 *   Set S := new socket for this port pair
 	 */
-	struct sock *newsk = inet_csk_clone_lock(sk, req, GFP_ATOMIC);
+	struct sock *newsk = dccp_csk_clone_lock(sk, req, GFP_ATOMIC);
 
 	if (newsk != NULL) {
 		struct dccp_request_sock *dreq = dccp_rsk(req);
@@ -131,6 +132,71 @@ struct sock *dccp_create_openreq_child(const struct sock *sk,
 
 EXPORT_SYMBOL_GPL(dccp_create_openreq_child);
 
+static int dccp_rtx_syn_ack(const struct sock *parent, struct request_sock *req)
+{
+	const struct dccp_request_sock_ops *ops;
+	int err;
+
+	ops = container_of(req->rsk_ops, const struct dccp_request_sock_ops, ops);
+	err = ops->rtx_response(parent, req);
+	if (!err)
+		req->num_retrans++;
+	return err;
+}
+
+static void dccp_reqsk_timer_handler(struct timer_list *t)
+{
+	struct request_sock *req = timer_container_of(req, t, rsk_timer);
+	struct sock *sk_listener = req->rsk_listener;
+	struct inet_connection_sock *icsk = inet_csk(sk_listener);
+	int max_retries = icsk->icsk_syn_retries ? : sysctl_dccp_request_retries;
+	unsigned long timeo;
+
+	if (sk_unhashed(req_to_sk(req))) {
+		reqsk_put(req);
+		return;
+	}
+
+	if (inet_sk_state_load(sk_listener) != DCCP_LISTEN)
+		goto drop;
+
+	if (req->num_retrans >= max_retries)
+		goto drop;
+
+	dccp_rtx_syn_ack(sk_listener, req);
+	timeo = min_t(unsigned long, DCCP_TIMEOUT_INIT << req->num_retrans,
+		      DCCP_RTO_MAX);
+	mod_timer(&req->rsk_timer, jiffies + timeo);
+	return;
+
+drop:
+	dccp_csk_reqsk_queue_drop_and_put(sk_listener, req);
+}
+
+bool dccp_reqsk_queue_hash_add(struct sock *sk, struct request_sock *req,
+			       unsigned long timeout)
+{
+	bool found_dup_sk = false;
+
+	timer_setup(&req->rsk_timer, dccp_reqsk_timer_handler, TIMER_PINNED);
+
+	/*
+	 * Three references: one for the caller, one for the ehash table,
+	 * and one for rsk_timer.
+	 */
+	refcount_set(&req->rsk_refcnt, 3);
+	reqsk_queue_added(&inet_csk(sk)->icsk_accept_queue);
+
+	if (unlikely(!dccp_ehash_insert(req_to_sk(req), NULL, &found_dup_sk))) {
+		refcount_set(&req->rsk_refcnt, 1);
+		return false;
+	}
+
+	mod_timer(&req->rsk_timer, jiffies + timeout);
+	return true;
+}
+EXPORT_SYMBOL_GPL(dccp_reqsk_queue_hash_add);
+
 /*
  * Process an incoming packet for RESPOND sockets represented
  * as an request_sock.
@@ -160,7 +226,7 @@ struct sock *dccp_check_req(struct sock *sk, struct sk_buff *skb,
 			 * To protect against Request floods, increment retrans
 			 * counter (backoff, monitored by dccp_response_timer).
 			 */
-			inet_rtx_syn_ack(sk, req);
+			dccp_rtx_syn_ack(sk, req);
 		}
 		/* Network Duplicate, discard packet */
 		goto out;
@@ -188,9 +254,9 @@ struct sock *dccp_check_req(struct sock *sk, struct sk_buff *skb,
 		 goto drop;
 
 	child = inet_csk(sk)->icsk_af_ops->syn_recv_sock(sk, skb, req, NULL,
-							 req, &own_req);
+							 req, &own_req, NULL);
 	if (child) {
-		child = inet_csk_complete_hashdance(sk, child, req, own_req);
+		child = dccp_csk_complete_hashdance(sk, child, req, own_req);
 		goto out;
 	}
 
@@ -199,7 +265,7 @@ drop:
 	if (dccp_hdr(skb)->dccph_type != DCCP_PKT_RESET)
 		req->rsk_ops->send_reset(sk, skb, SK_RST_REASON_NOT_SPECIFIED);
 
-	inet_csk_reqsk_queue_drop(sk, req);
+	dccp_csk_reqsk_queue_drop(sk, req);
 out:
 	spin_unlock_bh(&dreq->dreq_lock);
 	return child;

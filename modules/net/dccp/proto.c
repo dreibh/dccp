@@ -288,7 +288,7 @@ int dccp_disconnect(struct sock *sk, int flags)
 
 	inet->inet_dport = 0;
 
-	inet_bhash2_reset_saddr(sk);
+	dccp_bhash2_reset_saddr(sk);
 
 	sk->sk_shutdown = 0;
 	sock_reset_flag(sk, SOCK_DONE);
@@ -809,8 +809,7 @@ out_discard:
 
 EXPORT_SYMBOL_GPL(dccp_sendmsg);
 
-int dccp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags,
-		 int *addr_len)
+int dccp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags)
 {
 	const struct dccp_hdr *dh;
 	long timeo;
@@ -948,7 +947,7 @@ int inet_dccp_listen(struct socket *sock, int backlog)
 			goto out;
 		}
 
-		err = inet_csk_listen_start(sk);
+		err = dccp_csk_listen_start(sk);
 		if (err)
 			goto out;
 	}
@@ -1107,6 +1106,12 @@ static inline void dccp_mib_exit(void)
 	free_percpu(dccp_statistics);
 }
 
+static void dccp_hashinfo2_free(struct inet_hashinfo *h)
+{
+	kvfree(h->lhash2);
+	h->lhash2 = NULL;
+}
+
 static int thash_entries;
 module_param(thash_entries, int, 0444);
 MODULE_PARM_DESC(thash_entries, "Number of ehash buckets");
@@ -1128,7 +1133,7 @@ static int __init dccp_init(void)
 
 	BUILD_BUG_ON(sizeof(struct dccp_skb_cb) >
 		     sizeof_field(struct sk_buff, cb));
-	rc = inet_hashinfo2_init_mod(&dccp_hashinfo);
+	rc = dccp_hashinfo2_init_mod(&dccp_hashinfo);
 	if (rc)
 		goto out_fail;
 	rc = -ENOBUFS;
@@ -1180,8 +1185,8 @@ static int __init dccp_init(void)
 	for (i = 0; i <= dccp_hashinfo.ehash_mask; i++)
 		INIT_HLIST_NULLS_HEAD(&dccp_hashinfo.ehash[i].chain, i);
 
-	if (inet_ehash_locks_alloc(&dccp_hashinfo))
-			goto out_free_dccp_ehash;
+	if (dccp_ehash_locks_alloc(&dccp_hashinfo))
+		goto out_free_dccp_ehash;
 
 	bhash_order = ehash_order;
 
@@ -1256,7 +1261,7 @@ out_free_bind2_bucket_cachep:
 out_free_bind_bucket_cachep:
 	kmem_cache_destroy(dccp_hashinfo.bind_bucket_cachep);
 out_free_hashinfo2:
-	inet_hashinfo2_free_mod(&dccp_hashinfo);
+	dccp_hashinfo2_free(&dccp_hashinfo);
 out_fail:
 	dccp_hashinfo.bhash = NULL;
 	dccp_hashinfo.bhash2 = NULL;
@@ -1279,10 +1284,11 @@ static void __exit dccp_fini(void)
 		   get_order((dccp_hashinfo.ehash_mask + 1) *
 			     sizeof(struct inet_ehash_bucket)));
 	inet_ehash_locks_free(&dccp_hashinfo);
+	kmem_cache_destroy(dccp_hashinfo.bind2_bucket_cachep);
 	kmem_cache_destroy(dccp_hashinfo.bind_bucket_cachep);
 	dccp_ackvec_exit();
 	dccp_sysctl_exit();
-	inet_hashinfo2_free_mod(&dccp_hashinfo);
+	dccp_hashinfo2_free(&dccp_hashinfo);
 }
 
 module_init(dccp_init);

@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: GPL-2.0
 
-LINUXINCLUDE += -I$(ROOTDIR)/include -I$(ROOTDIR)/.. --include dccp-module-config.h
+CONFIG_IP_DCCP ?= m
+CONFIG_IP_DCCP_CCID3 ?= y
+CONFIG_IP_DCCP_TFRC_LIB ?= y
+CONFIG_INET_DCCP_DIAG ?= m
+
+LINUXINCLUDE := -I$(ROOTDIR)/include -I$(ROOTDIR)/.. --include dccp-module-config.h $(LINUXINCLUDE)
 
 obj-$(CONFIG_IP_DCCP) += dccp.o dccp_ipv4.o
 
 dccp-y := ccid.o feat.o input.o minisocks.o options.o output.o proto.o timer.o \
-	  qpolicy.o
+	  qpolicy.o dccp_inet.o
 #
 # CCID algorithms to be used by dccp.ko
 #

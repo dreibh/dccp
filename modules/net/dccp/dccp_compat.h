@@ -7,17 +7,10 @@
 
 /*
  * Linux 7.1 (commit 8341c989ac77, "net: remove addr_len argument of recvmsg()
- * handlers") dropped the unused int *addr_len parameter from struct proto::recvmsg.
+ * handlers") dropped the unused int *addr_len parameter from struct proto::recvmsg,
+ * and some distro 7.0 kernels (such as Ubuntu 26.04) backported it.
+ * Select the matching handler at compile time via C11 _Generic.
  */
-#ifndef HAVE_4ARG_PROTO_RECVMSG
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 1, 0)
-#define HAVE_4ARG_PROTO_RECVMSG 1
-#endif
-#endif
-
-#ifdef HAVE_4ARG_PROTO_RECVMSG
-#define DCCP_RECVMSG_OP dccp_recvmsg
-#else
 int dccp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int flags);
 
 static inline int dccp_recvmsg_compat(struct sock *sk, struct msghdr *msg,
@@ -25,8 +18,11 @@ static inline int dccp_recvmsg_compat(struct sock *sk, struct msghdr *msg,
 {
 	return dccp_recvmsg(sk, msg, len, flags);
 }
-#define DCCP_RECVMSG_OP dccp_recvmsg_compat
-#endif
+
+#define DCCP_RECVMSG_OP \
+	_Generic(((struct proto *)0)->recvmsg, \
+		 int (*)(struct sock *, struct msghdr *, size_t, int): dccp_recvmsg, \
+		 default: dccp_recvmsg_compat)
 
 /*
  * Linux 7.1 made CONFIG_IPV6 built-in only and removed ipv6_stub along with
@@ -34,6 +30,7 @@ static inline int dccp_recvmsg_compat(struct sock *sk, struct msghdr *msg,
  */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(7, 1, 0)
 #if IS_ENABLED(CONFIG_IPV6)
+#include <net/ipv6.h>
 #include <net/ipv6_stubs.h>
 
 static inline struct dst_entry *
