@@ -190,15 +190,6 @@ static inline __sum16 dccp_v6_csum_finish(struct sk_buff *skb,
 	return csum_ipv6_magic(saddr, daddr, skb->len, IPPROTO_DCCP, skb->csum);
 }
 
-static inline void dccp_v6_send_check(struct sock *sk, struct sk_buff *skb)
-{
-	struct ipv6_pinfo *np = inet6_sk(sk);
-	struct dccp_hdr *dh = dccp_hdr(skb);
-
-	dccp_csum_outgoing(skb);
-	dh->dccph_checksum = dccp_v6_csum_finish(skb, &np->saddr, &sk->sk_v6_daddr);
-}
-
 static inline __u64 dccp_v6_init_sequence(struct sk_buff *skb)
 {
 	return secure_dccpv6_sequence_number(ipv6_hdr(skb)->daddr.s6_addr32,
@@ -1131,7 +1122,6 @@ failure:
 
 static const struct inet_connection_sock_af_ops dccp_ipv6_af_ops = {
 	.queue_xmit	   = inet6_csk_xmit,
-	.send_check	   = dccp_v6_send_check,
 	.rebuild_header	   = dccp_inet6_sk_rebuild_header,
 	.conn_request	   = dccp_v6_conn_request,
 	.syn_recv_sock	   = dccp_v6_request_recv_sock,
@@ -1145,7 +1135,6 @@ static const struct inet_connection_sock_af_ops dccp_ipv6_af_ops = {
  */
 static const struct inet_connection_sock_af_ops dccp_ipv6_mapped = {
 	.queue_xmit	   = ip_queue_xmit,
-	.send_check	   = dccp_v4_send_check,
 	.rebuild_header	   = inet_sk_rebuild_header,
 	.conn_request	   = dccp_v6_conn_request,
 	.syn_recv_sock	   = dccp_v6_request_recv_sock,

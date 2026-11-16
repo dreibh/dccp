@@ -12,7 +12,13 @@
 #include <linux/slab.h>
 #include <linux/sched/signal.h>
 
+#include <net/checksum.h>
 #include <net/inet_sock.h>
+#if IS_ENABLED(CONFIG_IPV6)
+#include <linux/ipv6.h>
+#include <net/ip6_checksum.h>
+#include <net/ipv6.h>
+#endif
 #include <net/sock.h>
 
 #include "ackvec.h"
@@ -31,6 +37,28 @@ static struct sk_buff *dccp_skb_entail(struct sock *sk, struct sk_buff *skb)
 	WARN_ON(sk->sk_send_head);
 	sk->sk_send_head = skb;
 	return skb_clone(sk->sk_send_head, gfp_any());
+}
+
+static void dccp_send_check(struct sock *sk, struct sk_buff *skb)
+{
+	struct dccp_hdr *dh = dccp_hdr(skb);
+
+	dccp_csum_outgoing(skb);
+#if IS_ENABLED(CONFIG_IPV6)
+	if (inet_csk(sk)->icsk_af_ops->net_header_len == sizeof(struct ipv6hdr)) {
+		const struct ipv6_pinfo *np = inet6_sk(sk);
+
+		dh->dccph_checksum = csum_ipv6_magic(&np->saddr,
+						     &sk->sk_v6_daddr,
+						     skb->len, IPPROTO_DCCP,
+						     skb->csum);
+		return;
+	}
+#endif
+	dh->dccph_checksum = csum_tcpudp_magic(inet_sk(sk)->inet_saddr,
+					       inet_sk(sk)->inet_daddr,
+					       skb->len, IPPROTO_DCCP,
+					       skb->csum);
 }
 
 /*
@@ -128,7 +156,7 @@ static int dccp_transmit_skb(struct sock *sk, struct sk_buff *skb)
 			break;
 		}
 
-		icsk->icsk_af_ops->send_check(sk, skb);
+		dccp_send_check(sk, skb);
 
 		if (set_ack)
 			dccp_event_ack_sent(sk);
