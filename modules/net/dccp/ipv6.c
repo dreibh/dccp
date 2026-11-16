@@ -1244,14 +1244,18 @@ static int __net_init dccp_v6_init_net(struct net *net)
 	if (dccp_hashinfo.bhash == NULL)
 		return -ESOCKTNOSUPPORT;
 
-	return inet_ctl_sock_create(&pn->v6_ctl_sk, PF_INET6,
-				    SOCK_DCCP, IPPROTO_DCCP, net);
+	int err = inet_ctl_sock_create(&pn->v6_ctl_sk, PF_INET6,
+				       SOCK_DCCP, IPPROTO_DCCP, net);
+	if (!err)
+		module_put(THIS_MODULE);
+	return err;
 }
 
 static void __net_exit dccp_v6_exit_net(struct net *net)
 {
 	struct dccp_v6_pernet *pn = net_generic(net, dccp_v6_pernet_id);
 
+	__module_get(THIS_MODULE);
 	inet_ctl_sock_destroy(pn->v6_ctl_sk);
 }
 

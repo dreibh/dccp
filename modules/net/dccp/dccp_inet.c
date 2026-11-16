@@ -598,6 +598,7 @@ struct request_sock *dccp_reqsk_alloc(const struct request_sock_ops *ops,
 		return NULL;
 
 	req->rsk_ops = ops;
+	req_to_sk(req)->sk_family = ops->family;
 	req_to_sk(req)->sk_prot = sk_listener->sk_prot;
 	req_to_sk(req)->__sk_common.skc_nulls_node.pprev = NULL;
 	req_to_sk(req)->sk_state = DCCP_NEW_SYN_RECV;
@@ -763,6 +764,7 @@ struct sock *dccp_csk_complete_hashdance(struct sock *sk, struct sock *child,
 	sk_acceptq_added(sk);
 	spin_unlock_bh(&queue->rskq_lock);
 
+	sock_hold(child);
 	return child;
 }
 EXPORT_SYMBOL_GPL(dccp_csk_complete_hashdance);

@@ -1163,14 +1163,18 @@ static int __net_init dccp_v4_init_net(struct net *net)
 	if (dccp_hashinfo.bhash == NULL)
 		return -ESOCKTNOSUPPORT;
 
-	return inet_ctl_sock_create(&pn->v4_ctl_sk, PF_INET,
-				    SOCK_DCCP, IPPROTO_DCCP, net);
+	int err = inet_ctl_sock_create(&pn->v4_ctl_sk, PF_INET,
+				       SOCK_DCCP, IPPROTO_DCCP, net);
+	if (!err)
+		module_put(THIS_MODULE);
+	return err;
 }
 
 static void __net_exit dccp_v4_exit_net(struct net *net)
 {
 	struct dccp_v4_pernet *pn = net_generic(net, dccp_v4_pernet_id);
 
+	__module_get(THIS_MODULE);
 	inet_ctl_sock_destroy(pn->v4_ctl_sk);
 }
 

@@ -240,6 +240,8 @@ void dccp_destroy_sock(struct sock *sk)
 	}
 	ccid_hc_rx_delete(dp->dccps_hc_rx_ccid, sk);
 	dp->dccps_hc_rx_ccid = NULL;
+	ccid_hc_tx_delete(dp->dccps_hc_tx_ccid, sk);
+	dp->dccps_hc_tx_ccid = NULL;
 
 	/* clean up feature negotiation state */
 	dccp_feat_list_purge(&dp->dccps_featneg);
