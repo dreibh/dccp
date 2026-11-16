@@ -857,6 +857,12 @@ struct inet_timewait_sock *dccp_twsk_alloc(const struct sock *sk,
 	tw->tw_prot		= sk->sk_prot;
 	tw->tw_daddr		= inet->inet_daddr;
 	tw->tw_rcv_saddr	= inet->inet_rcv_saddr;
+#if IS_ENABLED(CONFIG_IPV6)
+	if (sk->sk_family == AF_INET6) {
+		tw->tw_v6_daddr = sk->sk_v6_daddr;
+		tw->tw_v6_rcv_saddr = sk->sk_v6_rcv_saddr;
+	}
+#endif
 	tw->tw_dport		= inet->inet_dport;
 	tw->tw_sport		= inet->inet_sport;
 	tw->tw_num		= inet->inet_num;

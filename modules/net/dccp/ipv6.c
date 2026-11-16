@@ -1120,8 +1120,57 @@ failure:
 	return err;
 }
 
+static int dccp_v6_xmit(struct sock *sk, struct sk_buff *skb, struct flowi *fl)
+{
+	struct ipv6_pinfo *np = inet6_sk(sk);
+	struct inet_sock *inet = inet_sk(sk);
+	struct flowi6 *fl6 = &fl->u.ip6;
+	struct dst_entry *dst = __sk_dst_check(sk, np->dst_cookie);
+	struct in6_addr *final_p, final;
+	struct ipv6_txoptions *opt;
+	int err;
+
+	memset(fl6, 0, sizeof(*fl6));
+	fl6->flowi6_proto = sk->sk_protocol;
+	fl6->daddr = sk->sk_v6_daddr;
+	fl6->saddr = np->saddr;
+	fl6->flowlabel = np->flow_label;
+	fl6->flowi6_oif = sk->sk_bound_dev_if;
+	fl6->flowi6_mark = READ_ONCE(sk->sk_mark);
+	fl6->fl6_dport = inet->inet_dport;
+	fl6->fl6_sport = inet->inet_sport;
+	fl6->flowi6_uid = sk->sk_uid;
+	security_sk_classify_flow(sk, flowi6_to_flowi_common(fl6));
+
+	if (!dst) {
+		rcu_read_lock();
+		final_p = fl6_update_dst(fl6, rcu_dereference(np->opt), &final);
+		rcu_read_unlock();
+
+		dst = ip6_dst_lookup_flow(sock_net(sk), sk, fl6, final_p);
+		if (IS_ERR(dst)) {
+			sk->sk_route_caps = 0;
+			kfree_skb(skb);
+			return PTR_ERR(dst);
+		}
+		ip6_dst_store(sk, dst, NULL, NULL);
+	}
+
+	skb_dst_set(skb, dst_clone(dst));
+
+	rcu_read_lock();
+	opt = rcu_dereference(np->opt);
+	fl6->daddr = sk->sk_v6_daddr;
+	fl6_update_dst(fl6, opt, &final);
+	err = ip6_xmit(sk, skb, fl6, READ_ONCE(sk->sk_mark), opt,
+		       np->tclass, READ_ONCE(sk->sk_priority));
+	rcu_read_unlock();
+
+	return err;
+}
+
 static const struct inet_connection_sock_af_ops dccp_ipv6_af_ops = {
-	.queue_xmit	   = inet6_csk_xmit,
+	.queue_xmit	   = dccp_v6_xmit,
 	.rebuild_header	   = dccp_inet6_sk_rebuild_header,
 	.conn_request	   = dccp_v6_conn_request,
 	.syn_recv_sock	   = dccp_v6_request_recv_sock,
