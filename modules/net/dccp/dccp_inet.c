@@ -1,7 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Self-contained INET/INET6 connection, hashtable, and time-wait helpers
- * bound directly to dccp_hashinfo for Linux >= 6.16.
+ *  net/dccp/dccp_inet.h
+ *
+ *  An implementation of the DCCP protocol
+ *  Copyright (c) 2026 Thomas Dreibholz <dreibh@simula.no>
  */
 
 #include <linux/dccp.h>

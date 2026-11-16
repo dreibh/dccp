@@ -1,4 +1,11 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ *  net/dccp/dccp_inet.h
+ *
+ *  An implementation of the DCCP protocol
+ *  Copyright (c) 2026 Thomas Dreibholz <dreibh@simula.no>
+ */
+
 #ifndef _DCCP_COMPAT_H
 #define _DCCP_COMPAT_H
 
