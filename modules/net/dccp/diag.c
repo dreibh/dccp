@@ -48,6 +48,121 @@ static void dccp_diag_get_info(struct sock *sk, struct inet_diag_msg *r,
 		dccp_get_info(sk, _info);
 }
 
+static void dccp_diag_fill_sockid(struct inet_diag_msg *r,
+				  const struct sock *sk)
+{
+	r->idiag_family = sk->sk_family;
+	r->idiag_state = sk->sk_state;
+	r->id.idiag_sport = htons(sk->sk_num);
+	r->id.idiag_dport = sk->sk_dport;
+	r->id.idiag_if = sk->sk_bound_dev_if;
+	r->id.idiag_cookie[0] = (u32)(unsigned long)sk;
+	r->id.idiag_cookie[1] = (u32)(((unsigned long)sk >> 31) >> 1);
+
+#if IS_ENABLED(CONFIG_IPV6)
+	if (sk->sk_family == AF_INET6) {
+		*(struct in6_addr *)r->id.idiag_src = sk->sk_v6_rcv_saddr;
+		*(struct in6_addr *)r->id.idiag_dst = sk->sk_v6_daddr;
+		return;
+	}
+#endif
+	r->id.idiag_src[0] = sk->sk_rcv_saddr;
+	r->id.idiag_dst[0] = sk->sk_daddr;
+}
+
+static int dccp_twsk_diag_fill(struct inet_timewait_sock *tw,
+			       struct sk_buff *skb,
+			       struct netlink_callback *cb,
+			       const struct inet_diag_req_v2 *req,
+			       u16 nlmsg_flags, bool net_admin)
+{
+	struct inet_diag_msg *r;
+	struct nlmsghdr *nlh;
+	long tmo;
+
+	nlh = nlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
+			cb->nlh->nlmsg_type, sizeof(*r), nlmsg_flags);
+	if (!nlh)
+		return -EMSGSIZE;
+
+	r = nlmsg_data(nlh);
+	memset(r, 0, sizeof(*r));
+	dccp_diag_fill_sockid(r, (const struct sock *)tw);
+
+	tmo = tw->tw_timer.expires - jiffies;
+	if (tmo < 0)
+		tmo = 0;
+
+	r->idiag_timer = 5; /* INET_DIAG_TIME_WAIT */
+	r->idiag_expires = jiffies_to_msecs(tmo);
+
+	if (net_admin && (req->idiag_ext & (1 << (INET_DIAG_MARK - 1)))) {
+		if (nla_put_u32(skb, INET_DIAG_MARK, tw->tw_mark) < 0) {
+			nlmsg_cancel(skb, nlh);
+			return -EMSGSIZE;
+		}
+	}
+
+	nlmsg_end(skb, nlh);
+	return 0;
+}
+
+static int dccp_req_diag_fill(struct request_sock *reqsk,
+			      struct sk_buff *skb,
+			      struct netlink_callback *cb,
+			      const struct inet_diag_req_v2 *req,
+			      u16 nlmsg_flags, bool net_admin)
+{
+	struct inet_request_sock *ireq = inet_rsk(reqsk);
+	struct inet_diag_msg *r;
+	struct nlmsghdr *nlh;
+	long tmo;
+
+	nlh = nlmsg_put(skb, NETLINK_CB(cb->skb).portid, cb->nlh->nlmsg_seq,
+			cb->nlh->nlmsg_type, sizeof(*r), nlmsg_flags);
+	if (!nlh)
+		return -EMSGSIZE;
+
+	r = nlmsg_data(nlh);
+	memset(r, 0, sizeof(*r));
+	dccp_diag_fill_sockid(r, req_to_sk(reqsk));
+
+	tmo = reqsk->rsk_timer.expires - jiffies;
+	if (tmo < 0)
+		tmo = 0;
+
+	r->idiag_timer = 2; /* INET_DIAG_SYN_RECV */
+	r->idiag_retrans = reqsk->num_retrans;
+	r->idiag_expires = jiffies_to_msecs(tmo);
+
+	if (net_admin && (req->idiag_ext & (1 << (INET_DIAG_MARK - 1)))) {
+		if (nla_put_u32(skb, INET_DIAG_MARK, ireq->ir_mark) < 0) {
+			nlmsg_cancel(skb, nlh);
+			return -EMSGSIZE;
+		}
+	}
+
+	nlmsg_end(skb, nlh);
+	return 0;
+}
+
+static int dccp_diag_fill_any(struct sock *sk, struct sk_buff *skb,
+			      struct netlink_callback *cb,
+			      const struct inet_diag_req_v2 *r,
+			      u16 nlmsg_flags, bool net_admin)
+{
+	if (sk->sk_state == DCCP_TIME_WAIT)
+		return dccp_twsk_diag_fill(inet_twsk(sk), skb, cb, r,
+					   nlmsg_flags, net_admin);
+
+	if (sk->sk_state == DCCP_NEW_SYN_RECV)
+		return dccp_req_diag_fill(inet_reqsk(sk), skb, cb, r,
+					  nlmsg_flags, net_admin);
+
+	return inet_sk_diag_fill(sk, inet_csk(sk), skb, cb, r,
+				 nlmsg_flags, net_admin);
+}
+
 static void dccp_diag_dump(struct sk_buff *skb, struct netlink_callback *cb,
 			   const struct inet_diag_req_v2 *r)
 {
@@ -142,10 +257,8 @@ skip_listen:
 				num++;
 				continue;
 			}
-			if (inet_sk_diag_fill(sk,
-					      sk_fullsock(sk) ? inet_csk(sk) : NULL,
-					      skb, cb, r, NLM_F_MULTI,
-					      net_admin) < 0) {
+			if (dccp_diag_fill_any(sk, skb, cb, r, NLM_F_MULTI,
+					       net_admin) < 0) {
 				spin_unlock_bh(lock);
 				goto done;
 			}
@@ -255,6 +368,16 @@ out:
 	return sk;
 }
 
+static void dccp_diag_put_sk(struct sock *sk)
+{
+	if (sk->sk_state == DCCP_TIME_WAIT)
+		dccp_twsk_put(inet_twsk(sk));
+	else if (sk->sk_state == DCCP_NEW_SYN_RECV)
+		dccp_reqsk_put(inet_reqsk(sk));
+	else
+		sock_put(sk);
+}
+
 static int dccp_diag_dump_one(struct netlink_callback *cb,
 			      const struct inet_diag_req_v2 *req)
 {
@@ -269,14 +392,13 @@ static int dccp_diag_dump_one(struct netlink_callback *cb,
 
 	rep = nlmsg_new(NLMSG_DEFAULT_SIZE, GFP_KERNEL);
 	if (!rep) {
-		sock_gen_put(sk);
+		dccp_diag_put_sk(sk);
 		return -ENOMEM;
 	}
 
-	err = inet_sk_diag_fill(sk, sk_fullsock(sk) ? inet_csk(sk) : NULL,
-				rep, cb, req, 0,
-				netlink_capable(cb->skb, CAP_NET_ADMIN));
-	sock_gen_put(sk);
+	err = dccp_diag_fill_any(sk, rep, cb, req, 0,
+				 netlink_capable(cb->skb, CAP_NET_ADMIN));
+	dccp_diag_put_sk(sk);
 	if (err < 0) {
 		kfree_skb(rep);
 		return err;
