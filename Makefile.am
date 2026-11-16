@@ -1,4 +1,0 @@
-EXTRA_DIST		= COPYING README.md
-SUBDIRS			= $(MODULES)
-
-MAINTAINERCLEANFILES	= Makefile.in dccp*.tar.gz
