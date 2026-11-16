@@ -1,0 +1,5 @@
+dccp (7.0.0-1) unstable; urgency=medium
+
+  * Initial release.
+
+ -- Thomas Dreibholz <dreibh@simula.no>  Mon, 16 Nov 2026 22:32:00 +0100
