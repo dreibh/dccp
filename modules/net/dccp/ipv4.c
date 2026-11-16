@@ -161,7 +161,27 @@ static struct sock *dccp_v4_lookup_skb(struct sk_buff *skb,
 		ilb2 = inet_lhash2_bucket(&dccp_hashinfo, hash);
 		sk = dccp_v4_lhash2_lookup(net, ilb2, iph->daddr, hnum,
 					   dif, sdif);
+		if (sk)
+			return sk;
 	}
+#if IS_ENABLED(CONFIG_IPV6)
+	{
+		struct in6_addr daddr6;
+
+		ipv6_addr_set_v4mapped(iph->daddr, &daddr6);
+		hash = ipv6_portaddr_hash(net, &daddr6, hnum);
+		ilb2 = inet_lhash2_bucket(&dccp_hashinfo, hash);
+		sk = dccp_v4_lhash2_lookup(net, ilb2, iph->daddr, hnum,
+					   dif, sdif);
+		if (sk)
+			return sk;
+
+		hash = ipv6_portaddr_hash(net, &in6addr_any, hnum);
+		ilb2 = inet_lhash2_bucket(&dccp_hashinfo, hash);
+		sk = dccp_v4_lhash2_lookup(net, ilb2, iph->daddr, hnum,
+					   dif, sdif);
+	}
+#endif
 	return sk;
 }
 
@@ -1107,7 +1127,7 @@ static struct proto dccp_v4_prot = {
 	.hash			= dccp_inet_hash,
 	.unhash			= dccp_inet_unhash,
 	.accept			= dccp_csk_accept,
-	.get_port		= inet_csk_get_port,
+	.get_port		= dccp_get_port,
 	.shutdown		= dccp_shutdown,
 	.destroy		= dccp_destroy_sock,
 	.max_header		= MAX_DCCP_HEADER,

@@ -19,6 +19,7 @@ bool dccp_ehash_nolisten(struct sock *sk, struct sock *osk, bool *found_dup_sk);
 int dccp_inet_hash(struct sock *sk);
 void dccp_inet_unhash(struct sock *sk);
 
+int dccp_get_port(struct sock *sk, unsigned short snum);
 void dccp_put_port(struct sock *sk);
 int dccp_inherit_port(const struct sock *sk, struct sock *child);
 int dccp_csk_listen_start(struct sock *sk);

@@ -225,6 +225,232 @@ dccp_bhash2_bucket(const struct net *net, const struct sock *sk,
 	return &dccp_hashinfo.bhash2[hash & (dccp_hashinfo.bhash_size - 1)];
 }
 
+static bool dccp_bind_addrs_conflict(const struct sock *sk1,
+				     const struct sock *sk2)
+{
+#if IS_ENABLED(CONFIG_IPV6)
+	if (sk1->sk_family == AF_INET6 && sk2->sk_family == AF_INET6) {
+		bool any1 = ipv6_addr_any(&sk1->sk_v6_rcv_saddr);
+		bool any2 = ipv6_addr_any(&sk2->sk_v6_rcv_saddr);
+
+		if (any1 && any2)
+			return true;
+		if (any1)
+			return !ipv6_addr_v4mapped(&sk2->sk_v6_rcv_saddr) ||
+			       !ipv6_only_sock(sk1);
+		if (any2)
+			return !ipv6_addr_v4mapped(&sk1->sk_v6_rcv_saddr) ||
+			       !ipv6_only_sock(sk2);
+		return ipv6_addr_equal(&sk1->sk_v6_rcv_saddr,
+				       &sk2->sk_v6_rcv_saddr);
+	}
+	if (sk1->sk_family == AF_INET6 || sk2->sk_family == AF_INET6) {
+		const struct sock *sk6 = (sk1->sk_family == AF_INET6) ? sk1 : sk2;
+		const struct sock *sk4 = (sk1->sk_family == AF_INET6) ? sk2 : sk1;
+
+		if (ipv6_only_sock(sk6))
+			return false;
+		if (ipv6_addr_any(&sk6->sk_v6_rcv_saddr))
+			return true;
+		if (ipv6_addr_v4mapped(&sk6->sk_v6_rcv_saddr))
+			return !sk4->sk_rcv_saddr ||
+			       sk4->sk_rcv_saddr ==
+				       sk6->sk_v6_rcv_saddr.s6_addr32[3];
+		return false;
+	}
+#endif
+	return !sk1->sk_rcv_saddr || !sk2->sk_rcv_saddr ||
+	       sk1->sk_rcv_saddr == sk2->sk_rcv_saddr;
+}
+
+static bool dccp_bind_conflict(const struct sock *sk,
+			       const struct inet_bind_bucket *tb,
+			       bool relax, bool reuseport_ok)
+{
+	const int reuse = sk->sk_reuse;
+	const int reuseport = sk->sk_reuseport;
+	const kuid_t uid = sk->sk_uid;
+	struct inet_bind2_bucket *tb2;
+	struct sock *sk2;
+
+	hlist_for_each_entry(tb2, &tb->bhash2, bhash_node) {
+		sk_for_each_bound(sk2, &tb2->owners) {
+			if (sk == sk2)
+				continue;
+			if (sk->sk_bound_dev_if && sk2->sk_bound_dev_if &&
+			    sk->sk_bound_dev_if != sk2->sk_bound_dev_if)
+				continue;
+			if (!dccp_bind_addrs_conflict(sk, sk2))
+				continue;
+
+			if (reuseport_ok && reuseport && sk2->sk_reuseport &&
+			    sk2->sk_state != DCCP_TIME_WAIT &&
+			    uid_eq(uid, sk2->sk_uid))
+				continue;
+
+			if (!relax && reuse && sk2->sk_reuse &&
+			    sk2->sk_state != DCCP_LISTEN)
+				continue;
+
+			return true;
+		}
+	}
+	return false;
+}
+
+int dccp_get_port(struct sock *sk, unsigned short snum)
+{
+	struct inet_connection_sock *icsk = inet_csk(sk);
+	struct inet_sock *inet = inet_sk(sk);
+	struct net *net = sock_net(sk);
+	const int l3mdev = inet_sk_bound_l3mdev(sk);
+	struct inet_bind_hashbucket *head, *head2;
+	struct inet_bind_bucket *tb = NULL;
+	struct inet_bind2_bucket *tb2 = NULL, *iter;
+	int ret = 1;
+
+	local_bh_disable();
+	if (!snum) {
+		int low, high, range, i, attempt;
+		u32 offset;
+
+		inet_get_local_port_range(net, &low, &high);
+		range = high - low + 1;
+		if (unlikely(range <= 0))
+			goto out_bh;
+
+		offset = get_random_u32() % range;
+		for (attempt = 0; attempt < 2; attempt++) {
+			for (i = 0; i < range; i++) {
+				u16 port = low + ((offset + i) % range);
+				struct inet_bind_bucket *iter_tb;
+
+				head = &dccp_hashinfo.bhash[inet_bhashfn(
+					net, port, dccp_hashinfo.bhash_size)];
+				spin_lock(&head->lock);
+				tb = NULL;
+				inet_bind_bucket_for_each(iter_tb, &head->chain) {
+					if (net_eq(ib_net(iter_tb), net) &&
+					    iter_tb->port == port &&
+					    iter_tb->l3mdev == l3mdev) {
+						tb = iter_tb;
+						break;
+					}
+				}
+				if (!tb) {
+					snum = port;
+					goto tb_not_found;
+				}
+				if (attempt == 1 &&
+				    !dccp_bind_conflict(sk, tb, true, true)) {
+					snum = port;
+					goto tb_found;
+				}
+				spin_unlock(&head->lock);
+			}
+		}
+		goto out_bh;
+	}
+
+	head = &dccp_hashinfo.bhash[inet_bhashfn(net, snum,
+						 dccp_hashinfo.bhash_size)];
+	spin_lock(&head->lock);
+	inet_bind_bucket_for_each(tb, &head->chain) {
+		if (net_eq(ib_net(tb), net) && tb->port == snum &&
+		    tb->l3mdev == l3mdev)
+			goto tb_found;
+	}
+tb_not_found:
+	tb = kmem_cache_alloc(dccp_hashinfo.bind_bucket_cachep, GFP_ATOMIC);
+	if (!tb)
+		goto out_unlock;
+	write_pnet(&tb->ib_net, net);
+	tb->l3mdev = l3mdev;
+	tb->port = snum;
+	tb->fastreuse = 0;
+	tb->fastreuseport = 0;
+	INIT_HLIST_HEAD(&tb->bhash2);
+	hlist_add_head(&tb->node, &head->chain);
+	goto success;
+
+tb_found:
+	if (!hlist_empty(&tb->bhash2)) {
+		if (sk->sk_reuse == SK_FORCE_REUSE)
+			goto success;
+		if (dccp_bind_conflict(sk, tb, false, true))
+			goto out_unlock;
+	}
+
+success:
+	head2 = inet_bhashfn_portaddr(&dccp_hashinfo, sk, net, snum);
+	spin_lock(&head2->lock);
+	hlist_for_each_entry(iter, &head2->chain, node) {
+		if (!net_eq(ib2_net(iter), net) || iter->port != snum ||
+		    iter->l3mdev != l3mdev)
+			continue;
+#if IS_ENABLED(CONFIG_IPV6)
+		if (sk->sk_family == AF_INET6) {
+			if (ipv6_addr_equal(&iter->v6_rcv_saddr,
+					    &sk->sk_v6_rcv_saddr)) {
+				tb2 = iter;
+				break;
+			}
+		} else
+#endif
+		if (iter->rcv_saddr == sk->sk_rcv_saddr) {
+			tb2 = iter;
+			break;
+		}
+	}
+
+	if (!tb2) {
+		tb2 = kmem_cache_alloc(dccp_hashinfo.bind2_bucket_cachep,
+				       GFP_ATOMIC);
+		if (!tb2) {
+			spin_unlock(&head2->lock);
+			if (hlist_empty(&tb->bhash2)) {
+				__hlist_del(&tb->node);
+				kmem_cache_free(dccp_hashinfo.bind_bucket_cachep,
+						tb);
+			}
+			goto out_unlock;
+		}
+		write_pnet(&tb2->ib_net, net);
+		tb2->l3mdev = l3mdev;
+		tb2->port = snum;
+#if IS_ENABLED(CONFIG_IPV6)
+		if (sk->sk_family == AF_INET6) {
+			tb2->addr_type = ipv6_addr_type(&sk->sk_v6_rcv_saddr);
+			tb2->v6_rcv_saddr = sk->sk_v6_rcv_saddr;
+		} else
+#endif
+		{
+			tb2->rcv_saddr = sk->sk_rcv_saddr;
+		}
+		tb2->fastreuse = 0;
+		tb2->fastreuseport = 0;
+		INIT_HLIST_HEAD(&tb2->owners);
+		hlist_add_head(&tb2->node, &head2->chain);
+		hlist_add_head(&tb2->bhash_node, &tb->bhash2);
+	}
+
+	if (!icsk->icsk_bind_hash) {
+		sk_add_bind_node(sk, &tb2->owners);
+		icsk->icsk_bind_hash = tb;
+		icsk->icsk_bind2_hash = tb2;
+	}
+	inet->inet_num = snum;
+	spin_unlock(&head2->lock);
+	ret = 0;
+
+out_unlock:
+	spin_unlock(&head->lock);
+out_bh:
+	local_bh_enable();
+	return ret;
+}
+EXPORT_SYMBOL_GPL(dccp_get_port);
+
 void dccp_put_port(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
