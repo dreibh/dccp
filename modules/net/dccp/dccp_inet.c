@@ -800,8 +800,8 @@ void dccp_sk_stream_wait_close(struct sock *sk, long timeout)
 					  !((1 << sk->sk_state) &
 					    (DCCPF_CLOSING |
 					     DCCPF_ACTIVE_CLOSEREQ |
-					     DCCPF_PASSIVE_CLOSE |
-					     DCCPF_PASSIVE_CLOSEREQ)),
+					     (1 << DCCP_PASSIVE_CLOSE) |
+					     (1 << DCCP_PASSIVE_CLOSEREQ))),
 					  &wait))
 				break;
 		} while (!signal_pending(current) && timeout);
