@@ -49,18 +49,18 @@ INCLUDE(GNUInstallDirs)
 #### PACKAGING                                                           ####
 #############################################################################
 
-SET(CPACK_PACKAGE_NAME        "${CMAKE_PROJECT_NAME}")
-SET(CPACK_PACKAGE_VERSION     "${BUILD_MAJOR}.${BUILD_MINOR}.${BUILD_PATCH}")
-SET(CPACK_SOURCE_GENERATOR    "TXZ;TGZ")
+SET(CPACK_SOURCE_GENERATOR "TXZ")
 SET(CPACK_SOURCE_PACKAGE_FILE_NAME
     "${CMAKE_PROJECT_NAME}-${BUILD_MAJOR}.${BUILD_MINOR}.${BUILD_PATCH}")
 SET(CPACK_SOURCE_IGNORE_FILES "\\\\.git;\\\\.swp$;~$;\\\\.\\\\#;/\\\\#")
 LIST(APPEND CPACK_SOURCE_IGNORE_FILES "^${PROJECT_SOURCE_DIR}/${CMAKE_PROJECT_NAME}[_-]")
-LIST(APPEND CPACK_SOURCE_IGNORE_FILES "^${PROJECT_SOURCE_DIR}/build/")
-LIST(APPEND CPACK_SOURCE_IGNORE_FILES "\\\\.make$|\\\\.log$|\\\\.cmd$")
-LIST(APPEND CPACK_SOURCE_IGNORE_FILES "\\\\.o$|\\\\.ko$|\\\\.mod$|\\\\.mod\\\\.c$")
-LIST(APPEND CPACK_SOURCE_IGNORE_FILES "/(Module\\\\.symvers|modules\\\\.order)$")
-LIST(APPEND CPACK_SOURCE_IGNORE_FILES "/(CMakeCache\\\\.txt|CMakeFiles|CMakeScripts|_CPack_Packages|\\\\.tmp_versions)/")
+LIST(APPEND CPACK_SOURCE_IGNORE_FILES "\\\\.make$|\\\\.log$")
+LIST(APPEND CPACK_SOURCE_IGNORE_FILES "/CMakeCache\\\\.txt$")
+LIST(APPEND CPACK_SOURCE_IGNORE_FILES "/(CMakeFiles|CMakeScripts|_CPack_Packages)/")
+LIST(APPEND CPACK_SOURCE_IGNORE_FILES "/package-version\\\\.h$")
+LIST(APPEND CPACK_SOURCE_IGNORE_FILES "/packaging\\\\.conf$")
+LIST(APPEND CPACK_SOURCE_IGNORE_FILES "^${PROJECT_SOURCE_DIR}/(po.*/|src.*/|)Makefile$")
+LIST(APPEND CPACK_SOURCE_IGNORE_FILES "^${PROJECT_SOURCE_DIR}/(po.*|src.*|[^/]*)\\\\.cmake$")
 INCLUDE(CPack)
 
 ADD_CUSTOM_TARGET(dist COMMAND ${CMAKE_MAKE_PROGRAM} clean package_source)
