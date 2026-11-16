@@ -153,7 +153,7 @@ static void dccp_reqsk_timer_handler(struct timer_list *t)
 	unsigned long timeo;
 
 	if (sk_unhashed(req_to_sk(req))) {
-		reqsk_put(req);
+		dccp_reqsk_put(req);
 		return;
 	}
 
@@ -188,7 +188,8 @@ bool dccp_reqsk_queue_hash_add(struct sock *sk, struct request_sock *req,
 	reqsk_queue_added(&inet_csk(sk)->icsk_accept_queue);
 
 	if (unlikely(!dccp_ehash_insert(req_to_sk(req), NULL, &found_dup_sk))) {
-		refcount_set(&req->rsk_refcnt, 1);
+		reqsk_queue_removed(&inet_csk(sk)->icsk_accept_queue, req);
+		refcount_set(&req->rsk_refcnt, 0);
 		return false;
 	}
 

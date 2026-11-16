@@ -8,6 +8,7 @@
 #include <linux/export.h>
 #include <linux/jhash.h>
 #include <linux/random.h>
+#include <linux/sched/signal.h>
 #include <linux/security.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
@@ -209,6 +210,139 @@ void dccp_inet_unhash(struct sock *sk)
 }
 EXPORT_SYMBOL_GPL(dccp_inet_unhash);
 
+static struct inet_bind_hashbucket *
+dccp_bhash2_bucket(const struct net *net, const struct sock *sk,
+		   const struct inet_bind2_bucket *tb2)
+{
+	u32 hash;
+
+#if IS_ENABLED(CONFIG_IPV6)
+	if (sk->sk_family == AF_INET6)
+		hash = ipv6_portaddr_hash(net, &tb2->v6_rcv_saddr, tb2->port);
+	else
+#endif
+		hash = ipv4_portaddr_hash(net, tb2->rcv_saddr, tb2->port);
+	return &dccp_hashinfo.bhash2[hash & (dccp_hashinfo.bhash_size - 1)];
+}
+
+void dccp_put_port(struct sock *sk)
+{
+	struct inet_connection_sock *icsk = inet_csk(sk);
+	struct net *net = sock_net(sk);
+	const unsigned short snum = inet_sk(sk)->inet_num;
+	struct inet_bind_hashbucket *head;
+	struct inet_bind_bucket *tb;
+	struct inet_bind2_bucket *tb2;
+
+	if (!icsk->icsk_bind_hash)
+		return;
+
+	head = &dccp_hashinfo.bhash[inet_bhashfn(net, snum,
+						 dccp_hashinfo.bhash_size)];
+	local_bh_disable();
+	spin_lock(&head->lock);
+	tb = icsk->icsk_bind_hash;
+	tb2 = icsk->icsk_bind2_hash;
+	__sk_del_bind_node(sk);
+	icsk->icsk_bind_hash = NULL;
+	icsk->icsk_bind2_hash = NULL;
+	inet_sk(sk)->inet_num = 0;
+
+	if (tb2 && hlist_empty(&tb2->owners)) {
+		struct inet_bind_hashbucket *head2 =
+			dccp_bhash2_bucket(net, sk, tb2);
+
+		spin_lock(&head2->lock);
+		__hlist_del(&tb2->node);
+		spin_unlock(&head2->lock);
+		__hlist_del(&tb2->bhash_node);
+		kmem_cache_free(dccp_hashinfo.bind2_bucket_cachep, tb2);
+	}
+	if (tb && hlist_empty(&tb->bhash2)) {
+		__hlist_del(&tb->node);
+		kmem_cache_free(dccp_hashinfo.bind_bucket_cachep, tb);
+	}
+	spin_unlock(&head->lock);
+	local_bh_enable();
+}
+EXPORT_SYMBOL_GPL(dccp_put_port);
+
+int dccp_inherit_port(const struct sock *sk, struct sock *child)
+{
+	struct inet_connection_sock *icsk = inet_csk(child);
+	struct inet_bind_bucket *tb = inet_csk(sk)->icsk_bind_hash;
+	const unsigned short port = inet_sk(child)->inet_num;
+	struct net *net = sock_net(child);
+	struct inet_bind_hashbucket *head, *head2;
+	struct inet_bind2_bucket *tb2 = NULL, *iter;
+	int l3mdev;
+
+	if (unlikely(!tb))
+		return -ENOENT;
+
+	l3mdev = inet_sk_bound_l3mdev(child);
+	head = &dccp_hashinfo.bhash[inet_bhashfn(net, port,
+						 dccp_hashinfo.bhash_size)];
+	head2 = inet_bhashfn_portaddr(&dccp_hashinfo, child, net, port);
+
+	spin_lock(&head->lock);
+	spin_lock(&head2->lock);
+	hlist_for_each_entry(iter, &head2->chain, node) {
+		if (!net_eq(ib2_net(iter), net) || iter->port != port ||
+		    iter->l3mdev != l3mdev)
+			continue;
+#if IS_ENABLED(CONFIG_IPV6)
+		if (child->sk_family == AF_INET6) {
+			if (ipv6_addr_equal(&iter->v6_rcv_saddr,
+					    &child->sk_v6_rcv_saddr)) {
+				tb2 = iter;
+				break;
+			}
+		} else
+#endif
+		if (iter->rcv_saddr == child->sk_rcv_saddr) {
+			tb2 = iter;
+			break;
+		}
+	}
+
+	if (!tb2) {
+		tb2 = kmem_cache_alloc(dccp_hashinfo.bind2_bucket_cachep,
+				       GFP_ATOMIC);
+		if (!tb2) {
+			spin_unlock(&head2->lock);
+			spin_unlock(&head->lock);
+			return -ENOMEM;
+		}
+		write_pnet(&tb2->ib_net, net);
+		tb2->l3mdev = l3mdev;
+		tb2->port = port;
+#if IS_ENABLED(CONFIG_IPV6)
+		if (child->sk_family == AF_INET6) {
+			tb2->addr_type =
+				ipv6_addr_type(&child->sk_v6_rcv_saddr);
+			tb2->v6_rcv_saddr = child->sk_v6_rcv_saddr;
+		} else
+#endif
+		{
+			tb2->rcv_saddr = child->sk_rcv_saddr;
+		}
+		tb2->fastreuse = 0;
+		tb2->fastreuseport = 0;
+		INIT_HLIST_HEAD(&tb2->owners);
+		hlist_add_head(&tb2->node, &head2->chain);
+		hlist_add_head(&tb2->bhash_node, &tb->bhash2);
+	}
+
+	sk_add_bind_node(child, &tb2->owners);
+	icsk->icsk_bind_hash = tb;
+	icsk->icsk_bind2_hash = tb2;
+	spin_unlock(&head2->lock);
+	spin_unlock(&head->lock);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(dccp_inherit_port);
+
 int dccp_csk_listen_start(struct sock *sk)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
@@ -235,6 +369,128 @@ int dccp_csk_listen_start(struct sock *sk)
 	return err;
 }
 EXPORT_SYMBOL_GPL(dccp_csk_listen_start);
+
+void dccp_csk_listen_stop(struct sock *sk)
+{
+	struct inet_connection_sock *icsk = inet_csk(sk);
+	struct request_sock_queue *queue = &icsk->icsk_accept_queue;
+	struct request_sock *req;
+	unsigned int i;
+
+	while ((req = reqsk_queue_remove(queue, sk)) != NULL) {
+		struct sock *child = req->sk;
+
+		local_bh_disable();
+		bh_lock_sock(child);
+		WARN_ON(sock_owned_by_user(child));
+		sock_hold(child);
+
+		dccp_csk_prepare_forced_close(child);
+		dccp_done(child);
+
+		bh_unlock_sock(child);
+		local_bh_enable();
+		sock_put(child);
+
+		dccp_reqsk_put(req);
+	}
+
+	if (!dccp_hashinfo.ehash)
+		return;
+
+	for (i = 0; i <= dccp_hashinfo.ehash_mask; i++) {
+		struct inet_ehash_bucket *head = &dccp_hashinfo.ehash[i];
+		spinlock_t *lock = inet_ehash_lockp(&dccp_hashinfo, i);
+		struct hlist_nulls_node *node;
+
+		spin_lock_bh(lock);
+		node = head->chain.first;
+		while (!is_a_nulls(node)) {
+			struct hlist_nulls_node *next = node->next;
+			struct sock *esk = container_of(node, struct sock,
+							__sk_common.skc_nulls_node);
+
+			if (esk->sk_state == DCCP_NEW_SYN_RECV &&
+			    inet_reqsk(esk)->rsk_listener == sk) {
+				struct request_sock *ereq = inet_reqsk(esk);
+
+				__sk_nulls_del_node_init_rcu(esk);
+				reqsk_queue_removed(queue, ereq);
+				if (timer_delete(&ereq->rsk_timer))
+					dccp_reqsk_put(ereq);
+				dccp_reqsk_put(ereq);
+			}
+			node = next;
+		}
+		spin_unlock_bh(lock);
+	}
+}
+EXPORT_SYMBOL_GPL(dccp_csk_listen_stop);
+
+struct sock *dccp_csk_accept(struct sock *sk, struct proto_accept_arg *arg)
+{
+	struct inet_connection_sock *icsk = inet_csk(sk);
+	struct request_sock_queue *queue = &icsk->icsk_accept_queue;
+	struct request_sock *req;
+	struct sock *newsk;
+	int error;
+
+	lock_sock(sk);
+
+	error = -EINVAL;
+	if (sk->sk_state != DCCP_LISTEN)
+		goto out_err;
+
+	if (reqsk_queue_empty(queue)) {
+		long timeo = sock_rcvtimeo(sk, arg->flags & O_NONBLOCK);
+		DEFINE_WAIT(wait);
+
+		error = -EAGAIN;
+		if (!timeo)
+			goto out_err;
+
+		for (;;) {
+			prepare_to_wait_exclusive(sk_sleep(sk), &wait,
+						  TASK_INTERRUPTIBLE);
+			release_sock(sk);
+			if (reqsk_queue_empty(queue))
+				timeo = schedule_timeout(timeo);
+			sched_annotate_sleep();
+			lock_sock(sk);
+			finish_wait(sk_sleep(sk), &wait);
+
+			if (!reqsk_queue_empty(queue))
+				break;
+			if (sk->sk_state != DCCP_LISTEN) {
+				error = -EINVAL;
+				goto out_err;
+			}
+			if (signal_pending(current)) {
+				error = sock_intr_errno(timeo);
+				goto out_err;
+			}
+			if (!timeo) {
+				error = -EAGAIN;
+				goto out_err;
+			}
+		}
+	}
+
+	req = reqsk_queue_remove(queue, sk);
+	newsk = req->sk;
+	arg->is_empty = reqsk_queue_empty(queue);
+	arg->err = 0;
+
+	release_sock(sk);
+	dccp_reqsk_put(req);
+	return newsk;
+
+out_err:
+	arg->err = error;
+	release_sock(sk);
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(dccp_csk_accept);
 
 int dccp_hash_connect(struct inet_timewait_death_row *death_row,
 		      struct sock *sk)
@@ -266,7 +522,7 @@ int dccp_hash_connect(struct inet_timewait_death_row *death_row,
 		if (dccp_ehash_nolisten(sk, NULL, &found_dup))
 			return 0;
 
-		inet_put_port(sk);
+		dccp_put_port(sk);
 		if (!found_dup)
 			break;
 	}
@@ -285,7 +541,7 @@ int dccp_bhash2_update_saddr(struct sock *sk, void *saddr, int family)
 	int err = 0;
 
 	if (rebind)
-		inet_put_port(sk);
+		dccp_put_port(sk);
 
 #if IS_ENABLED(CONFIG_IPV6)
 	if (family == AF_INET6) {
@@ -317,7 +573,7 @@ void dccp_bhash2_reset_saddr(struct sock *sk)
 		return;
 
 	if (rebind)
-		inet_put_port(sk);
+		dccp_put_port(sk);
 
 	inet->inet_saddr = 0;
 	sk_rcv_saddr_set(sk, 0);
@@ -330,6 +586,49 @@ void dccp_bhash2_reset_saddr(struct sock *sk)
 		sk->sk_prot->get_port(sk, port);
 }
 EXPORT_SYMBOL_GPL(dccp_bhash2_reset_saddr);
+
+struct request_sock *dccp_reqsk_alloc(const struct request_sock_ops *ops,
+				      struct sock *sk_listener,
+				      bool attach_listener)
+{
+	struct request_sock *req;
+
+	req = kzalloc(ops->obj_size, GFP_ATOMIC);
+	if (!req)
+		return NULL;
+
+	req->rsk_ops = ops;
+	req_to_sk(req)->sk_prot = sk_listener->sk_prot;
+	req_to_sk(req)->__sk_common.skc_nulls_node.pprev = NULL;
+	req_to_sk(req)->sk_state = DCCP_NEW_SYN_RECV;
+	write_pnet(&req_to_sk(req)->sk_net, sock_net(sk_listener));
+	refcount_set(&req->rsk_refcnt, 0);
+
+	if (attach_listener) {
+		sock_hold(sk_listener);
+		req->rsk_listener = sk_listener;
+	}
+	return req;
+}
+EXPORT_SYMBOL_GPL(dccp_reqsk_alloc);
+
+void dccp_reqsk_free(struct request_sock *req)
+{
+	if (req->rsk_ops->destructor)
+		req->rsk_ops->destructor(req);
+	if (req->rsk_listener)
+		sock_put(req->rsk_listener);
+	kfree(req->saved_syn);
+	kfree(req);
+}
+EXPORT_SYMBOL_GPL(dccp_reqsk_free);
+
+void dccp_reqsk_put(struct request_sock *req)
+{
+	if (refcount_dec_and_test(&req->rsk_refcnt))
+		dccp_reqsk_free(req);
+}
+EXPORT_SYMBOL_GPL(dccp_reqsk_put);
 
 struct sock *dccp_csk_clone_lock(const struct sock *sk,
 				 const struct request_sock *req,
@@ -412,12 +711,12 @@ void dccp_csk_reqsk_queue_drop(struct sock *sk, struct request_sock *req)
 	if (!sk_unhashed(req_to_sk(req))) {
 		__sk_nulls_del_node_init_rcu(req_to_sk(req));
 		reqsk_queue_removed(&inet_csk(sk)->icsk_accept_queue, req);
-		reqsk_put(req);
+		dccp_reqsk_put(req);
 	}
 	spin_unlock_bh(lock);
 
 	if (timer_delete(&req->rsk_timer))
-		reqsk_put(req);
+		dccp_reqsk_put(req);
 }
 EXPORT_SYMBOL_GPL(dccp_csk_reqsk_queue_drop);
 
@@ -425,7 +724,7 @@ void dccp_csk_reqsk_queue_drop_and_put(struct sock *sk,
 				       struct request_sock *req)
 {
 	dccp_csk_reqsk_queue_drop(sk, req);
-	reqsk_put(req);
+	dccp_reqsk_put(req);
 }
 EXPORT_SYMBOL_GPL(dccp_csk_reqsk_queue_drop_and_put);
 
@@ -433,17 +732,84 @@ struct sock *dccp_csk_complete_hashdance(struct sock *sk, struct sock *child,
 					 struct request_sock *req,
 					 bool own_req)
 {
-	if (own_req) {
-		dccp_csk_reqsk_queue_drop(sk, req);
-		reqsk_put(req);
-		return child;
+	struct request_sock_queue *queue = &inet_csk(sk)->icsk_accept_queue;
+
+	if (!own_req) {
+		bh_unlock_sock(child);
+		sock_put(child);
+		return NULL;
 	}
 
-	bh_unlock_sock(child);
-	sock_put(child);
-	return NULL;
+	dccp_csk_reqsk_queue_drop(sk, req);
+
+	spin_lock_bh(&queue->rskq_lock);
+	if (unlikely(sk->sk_state != DCCP_LISTEN)) {
+		spin_unlock_bh(&queue->rskq_lock);
+		dccp_csk_prepare_forced_close(child);
+		dccp_done(child);
+		bh_unlock_sock(child);
+		sock_put(child);
+		dccp_reqsk_put(req);
+		return NULL;
+	}
+
+	req->sk = child;
+	req->dl_next = NULL;
+	if (queue->rskq_accept_head == NULL)
+		WRITE_ONCE(queue->rskq_accept_head, req);
+	else
+		queue->rskq_accept_tail->dl_next = req;
+	queue->rskq_accept_tail = req;
+	sk_acceptq_added(sk);
+	spin_unlock_bh(&queue->rskq_lock);
+
+	return child;
 }
 EXPORT_SYMBOL_GPL(dccp_csk_complete_hashdance);
+
+void dccp_csk_prepare_forced_close(struct sock *sk)
+{
+	sock_orphan(sk);
+	inet_sk(sk)->inet_num = 0;
+}
+EXPORT_SYMBOL_GPL(dccp_csk_prepare_forced_close);
+
+void dccp_csk_destroy_sock(struct sock *sk)
+{
+	WARN_ON(sk->sk_state != DCCP_CLOSED);
+	WARN_ON(!sk_unhashed(sk));
+
+	if (sk->sk_prot->destroy)
+		sk->sk_prot->destroy(sk);
+
+	sk_stream_kill_queues(sk);
+	xfrm_sk_free_policy(sk);
+	sock_put(sk);
+}
+EXPORT_SYMBOL_GPL(dccp_csk_destroy_sock);
+
+void dccp_sk_stream_wait_close(struct sock *sk, long timeout)
+{
+	if (timeout) {
+		DEFINE_WAIT(wait);
+
+		do {
+			prepare_to_wait(sk_sleep(sk), &wait,
+					TASK_INTERRUPTIBLE);
+			if (sk_wait_event(sk, &timeout,
+					  !((1 << sk->sk_state) &
+					    (DCCPF_CLOSING |
+					     DCCPF_ACTIVE_CLOSEREQ |
+					     DCCPF_PASSIVE_CLOSE |
+					     DCCPF_PASSIVE_CLOSEREQ)),
+					  &wait))
+				break;
+		} while (!signal_pending(current) && timeout);
+
+		finish_wait(sk_sleep(sk), &wait);
+	}
+}
+EXPORT_SYMBOL_GPL(dccp_sk_stream_wait_close);
 
 void dccp_twsk_put(struct inet_timewait_sock *tw)
 {
@@ -590,6 +956,43 @@ void dccp_csk_clear_xmit_timers(struct sock *sk)
 }
 EXPORT_SYMBOL_GPL(dccp_csk_clear_xmit_timers);
 
+int dccp_inet_sk_rebuild_header(struct sock *sk)
+{
+	struct inet_sock *inet = inet_sk(sk);
+	struct rtable *rt = (struct rtable *)__sk_dst_check(sk, 0);
+	__be32 daddr;
+	struct ip_options_rcu *inet_opt;
+	int err;
+
+	if (rt)
+		return 0;
+
+	rcu_read_lock();
+	inet_opt = rcu_dereference(inet->inet_opt);
+	daddr = inet->inet_daddr;
+	if (inet_opt && inet_opt->opt.srr)
+		daddr = inet_opt->opt.faddr;
+	rt = ip_route_output_ports(sock_net(sk), &inet->cork.fl.u.ip4, sk,
+				   daddr, inet->inet_saddr,
+				   inet->inet_dport, inet->inet_sport,
+				   sk->sk_protocol,
+				   inet_sk_dscp(inet),
+				   sk->sk_bound_dev_if);
+	rcu_read_unlock();
+
+	if (!IS_ERR(rt)) {
+		sk_setup_caps(sk, &rt->dst);
+		return 0;
+	}
+
+	err = PTR_ERR(rt);
+	sk->sk_route_caps = 0;
+	if (!inet_opt || !inet_opt->opt.srr)
+		WRITE_ONCE(sk->sk_err_soft, -err);
+	return err;
+}
+EXPORT_SYMBOL_GPL(dccp_inet_sk_rebuild_header);
+
 struct dst_entry *dccp_csk_route_req(const struct sock *sk, struct flowi4 *fl4,
 				     const struct request_sock *req)
 {
@@ -617,6 +1020,40 @@ struct dst_entry *dccp_csk_route_req(const struct sock *sk, struct flowi4 *fl4,
 }
 EXPORT_SYMBOL_GPL(dccp_csk_route_req);
 
+struct dst_entry *dccp_csk_route_child_sock(const struct sock *sk,
+					    struct sock *newsk,
+					    const struct request_sock *req)
+{
+	const struct inet_request_sock *ireq = inet_rsk(req);
+	struct net *net = read_pnet(&ireq->ireq_net);
+	struct inet_sock *newinet = inet_sk(newsk);
+	struct ip_options_rcu *opt;
+	struct flowi4 *fl4;
+	struct rtable *rt;
+
+	opt = rcu_dereference(ireq->ireq_opt);
+	fl4 = &newinet->cork.fl.u.ip4;
+
+	flowi4_init_output(fl4, ireq->ir_iif, ireq->ir_mark,
+			   inet_sk_dscp(inet_sk(sk)), RT_SCOPE_UNIVERSE,
+			   sk->sk_protocol, inet_sk_flowi_flags(sk),
+			   (opt && opt->opt.srr) ? opt->opt.faddr :
+						   ireq->ir_rmt_addr,
+			   ireq->ir_loc_addr, ireq->ir_rmt_port,
+			   htons(ireq->ir_num), sk->sk_uid);
+	security_req_classify_flow(req, flowi4_to_flowi_common(fl4));
+	rt = ip_route_output_flow(net, fl4, sk);
+	if (IS_ERR(rt))
+		return NULL;
+
+	if (opt && opt->opt.is_strictroute && rt->rt_uses_gateway) {
+		ip_rt_put(rt);
+		return NULL;
+	}
+	return &rt->dst;
+}
+EXPORT_SYMBOL_GPL(dccp_csk_route_child_sock);
+
 struct dst_entry *dccp_csk_update_pmtu(struct sock *sk, u32 mtu)
 {
 	struct dst_entry *dst = __sk_dst_check(sk, 0);
@@ -631,6 +1068,56 @@ struct dst_entry *dccp_csk_update_pmtu(struct sock *sk, u32 mtu)
 	return dst;
 }
 EXPORT_SYMBOL_GPL(dccp_csk_update_pmtu);
+
+int dccp_ip_build_and_send_pkt(struct sk_buff *skb, const struct sock *sk,
+			       __be32 saddr, __be32 daddr,
+			       struct ip_options_rcu *opt, u8 tos)
+{
+	struct rtable *rt = skb_rtable(skb);
+	struct net *net = sock_net(sk);
+	unsigned int optlen = opt ? opt->opt.optlen : 0;
+	struct iphdr *iph;
+	int ttl;
+
+	ttl = READ_ONCE(inet_sk(sk)->uc_ttl);
+	if (ttl < 0)
+		ttl = dst_metric_raw(&rt->dst, RTAX_HOPLIMIT);
+	if (ttl <= 0)
+		ttl = READ_ONCE(net->ipv4.sysctl_ip_default_ttl);
+
+	skb_push(skb, sizeof(struct iphdr) + optlen);
+	skb_reset_network_header(skb);
+	iph = ip_hdr(skb);
+	iph->version  = 4;
+	iph->ihl      = (sizeof(struct iphdr) + optlen) >> 2;
+	iph->tos      = tos;
+	iph->ttl      = ttl;
+	iph->daddr    = (opt && opt->opt.srr) ? opt->opt.faddr : daddr;
+	iph->saddr    = saddr;
+	iph->protocol = sk->sk_protocol;
+	if (ip_dont_fragment(sk, &rt->dst)) {
+		iph->frag_off = htons(IP_DF);
+		iph->id = 0;
+	} else {
+		iph->frag_off = 0;
+		__ip_select_ident(net, iph, 1);
+	}
+	if (optlen) {
+		memcpy(iph + 1, opt->opt.__data, optlen);
+		if (opt->opt.srr)
+			memcpy((u8 *)iph + opt->opt.srr - 1 +
+			       ((u8 *)iph)[opt->opt.srr - 1] - 4,
+			       &daddr, 4);
+	}
+
+	skb->priority = READ_ONCE(sk->sk_priority);
+	skb->mark = READ_ONCE(sk->sk_mark);
+	iph->tot_len = htons(skb->len);
+	ip_send_check(iph);
+
+	return ip_local_out(net, (struct sock *)sk, skb);
+}
+EXPORT_SYMBOL_GPL(dccp_ip_build_and_send_pkt);
 
 #if IS_ENABLED(CONFIG_IPV6)
 int dccp_inet6_sk_rebuild_header(struct sock *sk)

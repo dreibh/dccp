@@ -354,7 +354,7 @@ void dccp_req_err(struct sock *sk, u64 seq)
 		 */
 		dccp_csk_reqsk_queue_drop(req->rsk_listener, req);
 	}
-	reqsk_put(req);
+	dccp_reqsk_put(req);
 }
 EXPORT_SYMBOL(dccp_req_err);
 
@@ -567,14 +567,15 @@ struct sock *dccp_v4_request_recv_sock(const struct sock *sk,
 		newinet->pinet6 = NULL;
 #endif
 
-	if (dst == NULL && (dst = inet_csk_route_child_sock(sk, newsk, req)) == NULL)
+	if (dst == NULL &&
+	    (dst = dccp_csk_route_child_sock(sk, newsk, req)) == NULL)
 		goto put_and_exit;
 
 	sk_setup_caps(newsk, dst);
 
 	dccp_sync_mss(newsk, dst_mtu(dst));
 
-	if (__inet_inherit_port(sk, newsk) < 0)
+	if (dccp_inherit_port(sk, newsk) < 0)
 		goto put_and_exit;
 	*own_req = dccp_ehash_nolisten(newsk, req_to_sk(req_unhash), NULL);
 	if (*own_req)
@@ -592,7 +593,7 @@ exit:
 	return NULL;
 put_and_exit:
 	newinet->inet_opt = NULL;
-	inet_csk_prepare_forced_close(newsk);
+	dccp_csk_prepare_forced_close(newsk);
 	dccp_done(newsk);
 	goto exit;
 }
@@ -643,10 +644,10 @@ static int dccp_v4_send_response(const struct sock *sk, struct request_sock *req
 		dh->dccph_checksum = dccp_v4_csum_finish(skb, ireq->ir_loc_addr,
 							      ireq->ir_rmt_addr);
 		rcu_read_lock();
-		err = ip_build_and_send_pkt(skb, sk, ireq->ir_loc_addr,
-					    ireq->ir_rmt_addr,
-					    rcu_dereference(ireq->ireq_opt),
-					    READ_ONCE(inet_sk(sk)->tos));
+		err = dccp_ip_build_and_send_pkt(skb, sk, ireq->ir_loc_addr,
+						 ireq->ir_rmt_addr,
+						 rcu_dereference(ireq->ireq_opt),
+						 READ_ONCE(inet_sk(sk)->tos));
 		rcu_read_unlock();
 		err = net_xmit_eval(err);
 	}
@@ -691,9 +692,9 @@ static void dccp_v4_ctl_send_reset(const struct sock *sk, struct sk_buff *rxskb,
 
 	local_bh_disable();
 	bh_lock_sock(ctl_sk);
-	err = ip_build_and_send_pkt(skb, ctl_sk,
-				    rxiph->daddr, rxiph->saddr, NULL,
-				    inet_sk(ctl_sk)->tos);
+	err = dccp_ip_build_and_send_pkt(skb, ctl_sk,
+					 rxiph->daddr, rxiph->saddr, NULL,
+					 inet_sk(ctl_sk)->tos);
 	bh_unlock_sock(ctl_sk);
 
 	if (net_xmit_eval(err) == 0) {
@@ -755,7 +756,7 @@ int dccp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (sk_acceptq_is_full(sk))
 		goto drop;
 
-	req = inet_reqsk_alloc(&dccp_request_sock_ops.ops, sk, true);
+	req = dccp_reqsk_alloc(&dccp_request_sock_ops.ops, sk, true);
 	if (req == NULL)
 		goto drop;
 
@@ -793,14 +794,14 @@ int dccp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 		goto drop_and_free;
 
 	if (unlikely(!dccp_reqsk_queue_hash_add(sk, req, DCCP_TIMEOUT_INIT)))
-		reqsk_free(req);
+		dccp_reqsk_free(req);
 	else
-		reqsk_put(req);
+		dccp_reqsk_put(req);
 
 	return 0;
 
 drop_and_free:
-	reqsk_free(req);
+	dccp_reqsk_free(req);
 drop:
 	__DCCP_INC_STATS(DCCP_MIB_ATTEMPTFAILS);
 	return -1;
@@ -1003,11 +1004,11 @@ lookup:
 		refcounted = true;
 		nsk = dccp_check_req(sk, skb, req);
 		if (!nsk) {
-			reqsk_put(req);
+			dccp_reqsk_put(req);
 			goto discard_and_relse;
 		}
 		if (nsk == sk) {
-			reqsk_put(req);
+			dccp_reqsk_put(req);
 		} else if (dccp_child_process(sk, nsk, skb)) {
 			dccp_v4_ctl_send_reset(sk, skb, SK_RST_REASON_NOT_SPECIFIED);
 			goto discard_and_relse;
@@ -1064,7 +1065,7 @@ discard_and_relse:
 
 static const struct inet_connection_sock_af_ops dccp_ipv4_af_ops = {
 	.queue_xmit	   = ip_queue_xmit,
-	.rebuild_header	   = inet_sk_rebuild_header,
+	.rebuild_header	   = dccp_inet_sk_rebuild_header,
 	.conn_request	   = dccp_v4_conn_request,
 	.syn_recv_sock	   = dccp_v4_request_recv_sock,
 	.net_header_len	   = sizeof(struct iphdr),
@@ -1105,7 +1106,7 @@ static struct proto dccp_v4_prot = {
 	.backlog_rcv		= dccp_v4_do_rcv,
 	.hash			= dccp_inet_hash,
 	.unhash			= dccp_inet_unhash,
-	.accept			= inet_csk_accept,
+	.accept			= dccp_csk_accept,
 	.get_port		= inet_csk_get_port,
 	.shutdown		= dccp_shutdown,
 	.destroy		= dccp_destroy_sock,

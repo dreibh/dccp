@@ -479,7 +479,7 @@ static int dccp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	if (sk_acceptq_is_full(sk))
 		goto drop;
 
-	req = inet_reqsk_alloc(&dccp6_request_sock_ops.ops, sk, true);
+	req = dccp_reqsk_alloc(&dccp6_request_sock_ops.ops, sk, true);
 	if (req == NULL)
 		goto drop;
 
@@ -532,14 +532,14 @@ static int dccp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 		goto drop_and_free;
 
 	if (unlikely(!dccp_reqsk_queue_hash_add(sk, req, DCCP_TIMEOUT_INIT)))
-		reqsk_free(req);
+		dccp_reqsk_free(req);
 	else
-		reqsk_put(req);
+		dccp_reqsk_put(req);
 
 	return 0;
 
 drop_and_free:
-	reqsk_free(req);
+	dccp_reqsk_free(req);
 drop:
 	__DCCP_INC_STATS(DCCP_MIB_ATTEMPTFAILS);
 	return -1;
@@ -688,8 +688,8 @@ static struct sock *dccp_v6_request_recv_sock(const struct sock *sk,
 
 	dccp_sync_mss(newsk, dst_mtu(dst));
 
-	if (__inet_inherit_port(sk, newsk) < 0) {
-		inet_csk_prepare_forced_close(newsk);
+	if (dccp_inherit_port(sk, newsk) < 0) {
+		dccp_csk_prepare_forced_close(newsk);
 		dccp_done(newsk);
 		goto out;
 	}
@@ -899,11 +899,11 @@ lookup:
 		refcounted = true;
 		nsk = dccp_check_req(sk, skb, req);
 		if (!nsk) {
-			reqsk_put(req);
+			dccp_reqsk_put(req);
 			goto discard_and_relse;
 		}
 		if (nsk == sk) {
-			reqsk_put(req);
+			dccp_reqsk_put(req);
 		} else if (dccp_child_process(sk, nsk, skb)) {
 			dccp_v6_ctl_send_reset(sk, skb, SK_RST_REASON_NOT_SPECIFIED);
 			goto discard_and_relse;
@@ -1135,7 +1135,7 @@ static const struct inet_connection_sock_af_ops dccp_ipv6_af_ops = {
  */
 static const struct inet_connection_sock_af_ops dccp_ipv6_mapped = {
 	.queue_xmit	   = ip_queue_xmit,
-	.rebuild_header	   = inet_sk_rebuild_header,
+	.rebuild_header	   = dccp_inet_sk_rebuild_header,
 	.conn_request	   = dccp_v6_conn_request,
 	.syn_recv_sock	   = dccp_v6_request_recv_sock,
 	.net_header_len	   = sizeof(struct iphdr),
@@ -1186,7 +1186,7 @@ static struct proto dccp_v6_prot = {
 	.backlog_rcv	   = dccp_v6_do_rcv,
 	.hash		   = dccp_inet_hash,
 	.unhash		   = dccp_inet_unhash,
-	.accept		   = inet_csk_accept,
+	.accept		   = dccp_csk_accept,
 	.get_port	   = inet_csk_get_port,
 	.shutdown	   = dccp_shutdown,
 	.destroy	   = dccp_destroy_sock,

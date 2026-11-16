@@ -19,12 +19,22 @@ bool dccp_ehash_nolisten(struct sock *sk, struct sock *osk, bool *found_dup_sk);
 int dccp_inet_hash(struct sock *sk);
 void dccp_inet_unhash(struct sock *sk);
 
+void dccp_put_port(struct sock *sk);
+int dccp_inherit_port(const struct sock *sk, struct sock *child);
 int dccp_csk_listen_start(struct sock *sk);
+void dccp_csk_listen_stop(struct sock *sk);
+struct sock *dccp_csk_accept(struct sock *sk, struct proto_accept_arg *arg);
 int dccp_hash_connect(struct inet_timewait_death_row *death_row,
 		      struct sock *sk);
 
 int dccp_bhash2_update_saddr(struct sock *sk, void *saddr, int family);
 void dccp_bhash2_reset_saddr(struct sock *sk);
+
+struct request_sock *dccp_reqsk_alloc(const struct request_sock_ops *ops,
+				      struct sock *sk_listener,
+				      bool attach_listener);
+void dccp_reqsk_free(struct request_sock *req);
+void dccp_reqsk_put(struct request_sock *req);
 
 struct sock *dccp_csk_clone_lock(const struct sock *sk,
 				 const struct request_sock *req,
@@ -35,6 +45,10 @@ void dccp_csk_reqsk_queue_drop_and_put(struct sock *sk,
 struct sock *dccp_csk_complete_hashdance(struct sock *sk, struct sock *child,
 					 struct request_sock *req,
 					 bool own_req);
+
+void dccp_csk_prepare_forced_close(struct sock *sk);
+void dccp_csk_destroy_sock(struct sock *sk);
+void dccp_sk_stream_wait_close(struct sock *sk, long timeout);
 
 struct inet_timewait_sock *dccp_twsk_alloc(const struct sock *sk,
 					   struct inet_timewait_death_row *dr,
@@ -52,9 +66,16 @@ void dccp_csk_init_xmit_timers(struct sock *sk,
 			       void (*keepalive_handler)(struct timer_list *));
 void dccp_csk_clear_xmit_timers(struct sock *sk);
 
+int dccp_inet_sk_rebuild_header(struct sock *sk);
 struct dst_entry *dccp_csk_route_req(const struct sock *sk, struct flowi4 *fl4,
 				     const struct request_sock *req);
+struct dst_entry *dccp_csk_route_child_sock(const struct sock *sk,
+					    struct sock *newsk,
+					    const struct request_sock *req);
 struct dst_entry *dccp_csk_update_pmtu(struct sock *sk, u32 mtu);
+int dccp_ip_build_and_send_pkt(struct sk_buff *skb, const struct sock *sk,
+			       __be32 saddr, __be32 daddr,
+			       struct ip_options_rcu *opt, u8 tos);
 
 #if IS_ENABLED(CONFIG_IPV6)
 int dccp_inet6_sk_rebuild_header(struct sock *sk);

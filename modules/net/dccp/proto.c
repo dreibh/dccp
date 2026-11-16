@@ -100,7 +100,7 @@ void dccp_set_state(struct sock *sk, const int state)
 		sk->sk_prot->unhash(sk);
 		if (inet_csk(sk)->icsk_bind_hash != NULL &&
 		    !(sk->sk_userlocks & SOCK_BINDPORT_LOCK))
-			inet_put_port(sk);
+			dccp_put_port(sk);
 		fallthrough;
 	default:
 		if (oldstate == DCCP_OPEN)
@@ -143,7 +143,7 @@ void dccp_done(struct sock *sk)
 	if (!sock_flag(sk, SOCK_DEAD))
 		sk->sk_state_change(sk);
 	else
-		inet_csk_destroy_sock(sk);
+		dccp_csk_destroy_sock(sk);
 }
 
 EXPORT_SYMBOL_GPL(dccp_done);
@@ -229,7 +229,7 @@ void dccp_destroy_sock(struct sock *sk)
 
 	/* Clean up a referenced DCCP bind bucket. */
 	if (inet_csk(sk)->icsk_bind_hash != NULL)
-		inet_put_port(sk);
+		dccp_put_port(sk);
 
 	kfree(dp->dccps_service_list);
 	dp->dccps_service_list = NULL;
@@ -268,7 +268,7 @@ int dccp_disconnect(struct sock *sk, int flags)
 	 * TCP uses a RST segment, DCCP a Reset packet with Code 2, "Aborted".
 	 */
 	if (old_state == DCCP_LISTEN) {
-		inet_csk_listen_stop(sk);
+		dccp_csk_listen_stop(sk);
 	} else if (dccp_need_reset(old_state)) {
 		dccp_send_reset(sk, DCCP_RESET_CODE_ABORTED);
 		sk->sk_err = ECONNRESET;
@@ -1002,7 +1002,7 @@ void dccp_close(struct sock *sk, long timeout)
 		dccp_set_state(sk, DCCP_CLOSED);
 
 		/* Special case. */
-		inet_csk_listen_stop(sk);
+		dccp_csk_listen_stop(sk);
 
 		goto adjudge_to_death;
 	}
@@ -1048,7 +1048,7 @@ void dccp_close(struct sock *sk, long timeout)
 	 */
 	__skb_queue_purge(&sk->sk_write_queue);
 
-	sk_stream_wait_close(sk, timeout);
+	dccp_sk_stream_wait_close(sk, timeout);
 
 adjudge_to_death:
 	state = sk->sk_state;
@@ -1074,7 +1074,7 @@ adjudge_to_death:
 		goto out;
 
 	if (sk->sk_state == DCCP_CLOSED)
-		inet_csk_destroy_sock(sk);
+		dccp_csk_destroy_sock(sk);
 
 	/* Otherwise, socket is reprieved until protocol close. */
 
