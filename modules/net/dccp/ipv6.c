@@ -900,16 +900,14 @@ lookup:
 		sock_hold(sk);
 		refcounted = true;
 		nsk = dccp_check_req(sk, skb, req);
-		if (!nsk) {
-			dccp_reqsk_put(req);
+		dccp_reqsk_put(req);
+		if (!nsk)
 			goto discard_and_relse;
-		}
-		if (nsk == sk) {
-			dccp_reqsk_put(req);
-		} else if (dccp_child_process(sk, nsk, skb)) {
-			dccp_v6_ctl_send_reset(sk, skb, SK_RST_REASON_NOT_SPECIFIED);
-			goto discard_and_relse;
-		} else {
+		if (nsk != sk) {
+			if (dccp_child_process(sk, nsk, skb)) {
+				dccp_v6_ctl_send_reset(sk, skb, SK_RST_REASON_NOT_SPECIFIED);
+				goto discard_and_relse;
+			}
 			sock_put(sk);
 			return 0;
 		}
