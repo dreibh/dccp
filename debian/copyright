@@ -13,13 +13,38 @@ Copyright: 2003 Nils-Erik Mattsson, Joacim Haggmark, Magnus Erixzon
            2008 Gerrit Renker <gerrit@erg.abdn.ac.uk>
            2008 Tomasz Grobelny <tomasz@grobelny.oswiecenia.net>
            2026 Thomas Dreibholz <dreibh@simula.no>
-License: GPL-2.0-only or GPL-2.0-or-later
+License: GPL-2+
+
+Files: modules/include/linux/dccp.h
+       modules/include/uapi/linux/dccp.h
+       modules/net/dccp/dccp.h
+       modules/net/dccp/Makefile
+       modules/net/dccp/Kconfig
+       modules/net/dccp/ccids/Kconfig
+Copyright: 2005 Arnaldo Carvalho de Melo <acme@conectiva.com.br>
+           2005-2006 Ian McDonald <ian.mcdonald@jandi.co.nz>
+           2026 Thomas Dreibholz <dreibh@simula.no>
+License: GPL-2
 
 Files: CMakeLists.txt
+       dkms.conf
+       dccp-module-config.h
+       modules/net/dccp/dccp_compat.h
+       modules/net/dccp/dccp_inet.c
+       modules/net/dccp/dccp_inet.h
+       test/dccp_test.c
 Copyright: 2026 Thomas Dreibholz <dreibh@simula.no>
-License: GPL-2.0-or-later
+License: GPL-2+
 
-License: GPL-2.0-only
+Files: autogen.sh
+Copyright: 2026 Thomas Dreibholz <dreibh@simula.no>
+License: GPL-3+
+
+Files: debian/*
+Copyright: 2026 Thomas Dreibholz <dreibh@simula.no>
+License: GPL-2+
+
+License: GPL-2
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
  the Free Software Foundation; version 2 of the License.
@@ -27,7 +52,7 @@ License: GPL-2.0-only
  On Debian systems, the full text of the GNU General Public License
  version 2 can be found in the file `/usr/share/common-licenses/GPL-2'.
 
-License: GPL-2.0-or-later
+License: GPL-2+
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
  the Free Software Foundation; either version 2 of the License, or
@@ -35,3 +60,12 @@ License: GPL-2.0-or-later
  .
  On Debian systems, the full text of the GNU General Public License
  version 2 can be found in the file `/usr/share/common-licenses/GPL-2'.
+
+License: GPL-3+
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; either version 3 of the License, or
+ (at your option) any later version.
+ .
+ On Debian systems, the full text of the GNU General Public License
+ version 3 can be found in the file `/usr/share/common-licenses/GPL-3'.

@@ -1,9 +1,8 @@
 Source: dccp
 Section: kernel
-Priority: optional
 Maintainer: Thomas Dreibholz <dreibh@simula.no>
 Build-Depends: debhelper-compat (= 13), cmake, dkms
-Standards-Version: 4.6.2
+Standards-Version: 4.7.4
 Homepage: https://github.com/dreibh/dccp
 
 Package: dccp-dkms
