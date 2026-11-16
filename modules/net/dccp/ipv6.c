@@ -637,9 +637,6 @@ static struct sock *dccp_v6_request_recv_sock(const struct sock *sk,
 	 * comment in that function for the gory details. -acme
 	 */
 
-	ip6_dst_store(newsk, dst, NULL, NULL);
-	newsk->sk_route_caps = dst->dev->features & ~(NETIF_F_IP_CSUM |
-						      NETIF_F_TSO);
 	newdp6 = (struct dccp6_sock *)newsk;
 	newinet = inet_sk(newsk);
 	newinet->pinet6 = &newdp6->inet6;
@@ -648,6 +645,11 @@ static struct sock *dccp_v6_request_recv_sock(const struct sock *sk,
 	memcpy(newnp, np, sizeof(struct ipv6_pinfo));
 
 	newnp->saddr		= ireq->ir_v6_loc_addr;
+	newnp->daddr		= ireq->ir_v6_rmt_addr;
+
+	ip6_dst_store(newsk, dst, NULL, NULL);
+	newsk->sk_route_caps = dst->dev->features & ~(NETIF_F_IP_CSUM |
+						      NETIF_F_TSO);
 
 	/* Now IPv6 options...
 
@@ -1124,30 +1126,30 @@ static int dccp_v6_xmit(struct sock *sk, struct sk_buff *skb, struct flowi *fl)
 {
 	struct ipv6_pinfo *np = inet6_sk(sk);
 	struct inet_sock *inet = inet_sk(sk);
-	struct flowi6 *fl6 = &fl->u.ip6;
+	struct flowi6 fl6;
 	struct dst_entry *dst = __sk_dst_check(sk, np->dst_cookie);
 	struct in6_addr *final_p, final;
 	struct ipv6_txoptions *opt;
 	int err;
 
-	memset(fl6, 0, sizeof(*fl6));
-	fl6->flowi6_proto = sk->sk_protocol;
-	fl6->daddr = sk->sk_v6_daddr;
-	fl6->saddr = np->saddr;
-	fl6->flowlabel = np->flow_label;
-	fl6->flowi6_oif = sk->sk_bound_dev_if;
-	fl6->flowi6_mark = READ_ONCE(sk->sk_mark);
-	fl6->fl6_dport = inet->inet_dport;
-	fl6->fl6_sport = inet->inet_sport;
-	fl6->flowi6_uid = sk->sk_uid;
-	security_sk_classify_flow(sk, flowi6_to_flowi_common(fl6));
+	memset(&fl6, 0, sizeof(fl6));
+	fl6.flowi6_proto = sk->sk_protocol;
+	fl6.daddr = sk->sk_v6_daddr;
+	fl6.saddr = np->saddr;
+	fl6.flowlabel = np->flow_label;
+	fl6.flowi6_oif = sk->sk_bound_dev_if;
+	fl6.flowi6_mark = READ_ONCE(sk->sk_mark);
+	fl6.fl6_dport = inet->inet_dport;
+	fl6.fl6_sport = inet->inet_sport;
+	fl6.flowi6_uid = sk->sk_uid;
+	security_sk_classify_flow(sk, flowi6_to_flowi_common(&fl6));
 
 	if (!dst) {
 		rcu_read_lock();
-		final_p = fl6_update_dst(fl6, rcu_dereference(np->opt), &final);
+		final_p = fl6_update_dst(&fl6, rcu_dereference(np->opt), &final);
 		rcu_read_unlock();
 
-		dst = ip6_dst_lookup_flow(sock_net(sk), sk, fl6, final_p);
+		dst = ip6_dst_lookup_flow(sock_net(sk), sk, &fl6, final_p);
 		if (IS_ERR(dst)) {
 			sk->sk_route_caps = 0;
 			kfree_skb(skb);
@@ -1160,9 +1162,9 @@ static int dccp_v6_xmit(struct sock *sk, struct sk_buff *skb, struct flowi *fl)
 
 	rcu_read_lock();
 	opt = rcu_dereference(np->opt);
-	fl6->daddr = sk->sk_v6_daddr;
-	fl6_update_dst(fl6, opt, &final);
-	err = ip6_xmit(sk, skb, fl6, READ_ONCE(sk->sk_mark), opt,
+	fl6.daddr = sk->sk_v6_daddr;
+	fl6_update_dst(&fl6, opt, &final);
+	err = ip6_xmit(sk, skb, &fl6, READ_ONCE(sk->sk_mark), opt,
 		       np->tclass, READ_ONCE(sk->sk_priority));
 	rcu_read_unlock();
 
@@ -1295,8 +1297,10 @@ static int __net_init dccp_v6_init_net(struct net *net)
 
 	int err = inet_ctl_sock_create(&pn->v6_ctl_sk, PF_INET6,
 				       SOCK_DCCP, IPPROTO_DCCP, net);
-	if (!err)
+	if (!err) {
 		module_put(THIS_MODULE);
+		module_put(THIS_MODULE);
+	}
 	return err;
 }
 
@@ -1304,6 +1308,7 @@ static void __net_exit dccp_v6_exit_net(struct net *net)
 {
 	struct dccp_v6_pernet *pn = net_generic(net, dccp_v6_pernet_id);
 
+	__module_get(THIS_MODULE);
 	__module_get(THIS_MODULE);
 	inet_ctl_sock_destroy(pn->v6_ctl_sk);
 }
