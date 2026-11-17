@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: dccp
-Source: https://github.com/dreibh/dccp
+Upstream-Name: linux-dccp
+Source: https://github.com/dreibh/linux-dccp
 
 Files: *
 Copyright: 2003 Nils-Erik Mattsson, Joacim Haggmark, Magnus Erixzon

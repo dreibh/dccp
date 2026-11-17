@@ -23,19 +23,19 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
 # Contact:  dreibh@simula.no
-# Homepage: https://github.com/dreibh/dccp
+# Homepage: https://github.com/dreibh/linux-dccp
 
 CMAKE_MINIMUM_REQUIRED(VERSION 3.16)
 SET(BUILD_MAJOR "7")
-SET(BUILD_MINOR "0")
+SET(BUILD_MINOR "3")
 SET(BUILD_PATCH "0~rc0")
 STRING(REGEX MATCH "^[0-9]+(\\.[0-9]+)?(\\.[0-9]+)?(\\.[0-9]+)?" CMAKE_COMPAT_VERSION "${BUILD_MAJOR}.${BUILD_MINOR}.${BUILD_PATCH}")
-PROJECT(dccp
+PROJECT(linux-dccp
         VERSION      "${CMAKE_COMPAT_VERSION}"
         LANGUAGES    C
-        HOMEPAGE_URL "https://github.com/dreibh/dccp")
-SET(PROJECT_SOURCE_URL     "https://github.com/dreibh/dccp")
-SET(PROJECT_BUGTRACKER_URL "https://github.com/dreibh/dccp/issues")
+        HOMEPAGE_URL "https://github.com/dreibh/linux-dccp")
+SET(PROJECT_SOURCE_URL     "https://github.com/dreibh/linux-dccp")
+SET(PROJECT_BUGTRACKER_URL "https://github.com/dreibh/linux-dccp/issues")
 
 
 #############################################################################

@@ -1,13 +1,17 @@
-Source: dccp
+Source: linux-dccp
 Section: kernel
+Priority: optional
 Maintainer: Thomas Dreibholz <dreibh@simula.no>
-Build-Depends: debhelper-compat (= 13), cmake, dkms
+Build-Depends: cmake,
+               debhelper-compat (= 13),
+               dh-dkms
 Standards-Version: 4.7.4
-Homepage: https://github.com/dreibh/dccp
+Homepage: https://github.com/dreibh/linux-dccp
 
-Package: dccp-dkms
+Package: linux-dccp-dkms
 Architecture: all
-Depends: ${misc:Depends}, dkms (>= 2.1.0.0)
+Depends: dkms (>= 2.1.0.0),
+         ${misc:Depends}
 Description: DCCP kernel modules (DKMS)
  This package provides the Datagram Congestion Controlled Protocol (DCCP)
  kernel modules (dccp, dccp_ipv4, dccp_ipv6, dccp_diag) for Linux kernels

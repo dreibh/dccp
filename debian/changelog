@@ -1,4 +1,4 @@
-dccp (7.0.0~rc0-1ubuntu1) unstable; urgency=medium
+linux-dccp (7.3.0~rc0-1ubuntu1) unstable; urgency=medium
 
   * Initial release.
 

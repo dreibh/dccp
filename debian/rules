@@ -1,10 +1,17 @@
 #!/usr/bin/make -f
 
+include /usr/share/dpkg/pkg-info.mk
+
+UPSTREAM_VERSION := $(firstword $(subst ~, ,$(DEB_VERSION_UPSTREAM)))
+
 %:
-	dh $@ --buildsystem=cmake
+	dh $@ --with dkms --buildsystem=cmake
 
 override_dh_auto_configure:
 	dh_auto_configure -- -DWITH_MODULES=OFF -DWITH_TESTS=OFF -DINSTALL_DKMS=ON
 
 execute_after_dh_auto_install:
-	rm -f debian/dccp-dkms/usr/src/dccp-*/COPYING
+	rm -f debian/linux-dccp-dkms/usr/src/dccp-*/COPYING
+
+override_dh_dkms:
+	dh_dkms -V $(UPSTREAM_VERSION)

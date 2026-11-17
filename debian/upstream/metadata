@@ -1,7 +1,7 @@
 ---
-Bug-Database: https://github.com/dreibh/dccp/issues
-Bug-Submit: https://github.com/dreibh/dccp/issues/new
+Bug-Database: https://github.com/dreibh/linux-dccp/issues
+Bug-Submit: https://github.com/dreibh/linux-dccp/issues/new
 Contact: Thomas Dreibholz <dreibh@simula.no>
 Name: Linux DCCP Kernel Module
-Repository: https://github.com/dreibh/dccp.git
-Repository-Browse: https://github.com/dreibh/dccp
+Repository: https://github.com/dreibh/linux-dccp.git
+Repository-Browse: https://github.com/dreibh/linux-dccp

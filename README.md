@@ -21,7 +21,7 @@ sudo dkms autoinstall
 To remove the DKMS registration later:
 
 ```bash
-sudo dkms remove dccp/7.0.0 --all
+sudo dkms remove dccp/7.3.0 --all
 ```
 
 # Manual Build and Installation via CMake
