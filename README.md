@@ -11,7 +11,7 @@ This repository contains Linux DCCP from Linux Kernel 6.15 ported to modern kern
 
 Tested with:
 
-* Ubuntu 26.04 (kernel 7.3.0)
+* Ubuntu 26.04 (kernel 7.0.0)
 * Ubuntu 26.10 (kernel 7.3.0)
 
 # 📦 Installation via DKMS (Recommended)
